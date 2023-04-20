@@ -10,5 +10,5 @@
 -- {%- endmacro %}
 {% macro set_query_tag() -%}
     {% set new_query_tag = model.name %}
-    {% do run_query("alter session set query_tag = '{}'".format({'model_name': new_query_tag, 'context_id': {{invocation_id}} })) %}
+    {% do run_query("alter session set query_tag = {}".format(new_query_tag))) %}
 {% endmacro %}
