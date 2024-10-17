@@ -155,8 +155,8 @@
                 WHEN MATCHED THEN
                     UPDATE SET {{ cp_dbt_standard_package.iceberg_update_columns('source', 'target', temp_view_name)}} 
                 WHEN NOT MATCHED THEN
-                    INSERT ({{ iceberg_insert_columns(temp_view_name) }})
-                    VALUES ({{ iceberg_insert_values('source', temp_view_name) }});
+                    INSERT ({{ cp_dbt_standard_package.iceberg_insert_columns(temp_view_name) }})
+                    VALUES ({{ cp_dbt_standard_package.iceberg_insert_values('source', temp_view_name) }});
             {#% endset %#}
             {% endcall %}
             {# % set merge_result = run_query(merge_statement) % #}
