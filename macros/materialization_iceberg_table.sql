@@ -153,7 +153,7 @@
                 ) AS source
                 ON target.{{ unique_key }} = source.{{ unique_key }}
                 WHEN MATCHED THEN
-                    UPDATE SET {{ iceberg_update_columns('source', 'target', temp_view_name)}} 
+                    UPDATE SET {{ cp_dbt_standard_package.iceberg_update_columns('source', 'target', temp_view_name)}} 
                 WHEN NOT MATCHED THEN
                     INSERT ({{ iceberg_insert_columns(temp_view_name) }})
                     VALUES ({{ iceberg_insert_values('source', temp_view_name) }});
