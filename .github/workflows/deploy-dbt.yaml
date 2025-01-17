@@ -29,7 +29,7 @@ jobs:
   apply:
     uses: colpal/dbt-common/.github/workflows/deploy-dbt.yaml@v1.4.0
     with: 
-      DBT_VERSION_TYPE: 1.8.0
+      DBT_VERSION_TYPE: 1.7.0
     secrets:
       VAULT_IAP_SA: ${{ secrets.VAULT_IAP_SA }}
       VAULT_IAP_CLIENT_ID: ${{ secrets.VAULT_IAP_CLIENT_ID }}
