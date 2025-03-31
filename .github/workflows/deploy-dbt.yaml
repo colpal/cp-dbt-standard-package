@@ -27,7 +27,7 @@ permissions:
 
 jobs:
   apply:
-    uses: colpal/dbt-common/.github/workflows/deploy-dbt.yaml@v1.6
+    uses: colpal/dbt-common/.github/workflows/deploy-dbt.yaml@DPB-154-dbt-common-v1.6
     with: 
       DBT_VERSION_TYPE: 1.8.0
     secrets:
