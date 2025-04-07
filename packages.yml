@@ -1,5 +1,5 @@
 packages:
   - package: brooklyn-data/dbt_artifacts
     version: 2.8.0
-#  - package: dbt-labs/dbt_project_evaluator
-#    version: 1.0.0
+  - package: dbt-labs/dbt_project_evaluator
+    version: 1.0.0
