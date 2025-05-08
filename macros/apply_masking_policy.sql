@@ -25,7 +25,7 @@
         {% set sql %}
         ALTER TABLE {{ table_name }}
         MODIFY COLUMN {{ column_name }}
-        SET MASKING POLICY GIT_CUR.{{ table_name.split(".")[0] }}."{{ policy_name }}"
+        SET MASKING POLICY "{{ policy_name }}"
         USING {% if policy_args %} {{ policy_args_list }} {% else %} {{ masked_column_args }} {% endif %};
         {% endset %}
         {% do run_query(sql) %}
@@ -41,7 +41,7 @@
           {% set set_sql %}
             ALTER TABLE {{ table_name }}
             MODIFY COLUMN {{ column_name }}
-            SET MASKING POLICY GIT_CUR.{{ table_name.split(".")[0] }}."{{ policy_name }}"
+            SET MASKING POLICY "{{ policy_name }}"
             USING {% if policy_args %} {{ policy_args_list }} {% else %} {{ masked_column_args }} {% endif %};
             {% endset %}
            {% do run_query(set_sql) %}
