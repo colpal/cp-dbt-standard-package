@@ -12,7 +12,7 @@
 
 {% set current_models_type=[] %}
 {%- for model in models_type -%}
-    {% do current_models_type.append(model | replace("seed","table") | replace("incremental","table")) %} 
+    {% do current_models_type.append(model | replace(".seed",".table") | replace(".incremental",".table") | replace(".snapshot",".table")) %} 
 {%- endfor -%}
 
 --Run a query to create the drop statements for all relations in snowflake that are NOT in the dbt project
@@ -55,7 +55,7 @@
           concat_ws('.', table_catalog, table_schema, table_name) as relation_name
         from 
           {{ target.database }}.information_schema.tables
-        where table_schema not in ('UTIL_COMMON','UTIL_SECURITY','INFORMATION_SCHEMA')),
+        where table_schema not in ('UTIL_COMMON','UTIL_SECURITY','INFORMATION_SCHEMA') ),
 
 
       tab_vw_to_drop_final as (
@@ -93,7 +93,7 @@
     {% endif %}
   {% endfor %}
 {% else %}
-  {% do log('No tables to clean.', True) %}
+  {% do log('No objects to clean.', True) %}
 {% endif %}
 
 {% set drop_tab_vw = run_query(tab_vw_cleanup_query).columns[0].values() %}
@@ -107,7 +107,7 @@
     {% endif %}
   {% endfor %}
 {% else %}
-  {% do log('No views to clean.', True) %}
+  {% do log('No objects to clean.', True) %}
 {% endif %}
 
 {%- endmacro -%}

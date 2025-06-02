@@ -1,0 +1,35 @@
+name: DBT FIN
+on:
+  pull_request:
+    branches:
+      - master
+      - develop
+    paths:
+      - 'dbt/**'
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - closed
+  push:
+    branches:
+      - master
+      - develop
+    paths:
+      - 'dbt/**'
+concurrency:
+  group: ${{ github.head_ref || github.ref_name }}
+permissions:
+  id-token: write
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  apply:
+    uses: colpal/dbt-common/.github/workflows/deploy-dbt.yaml@v1.4.1
+    with: 
+      DBT_VERSION_TYPE: 1.8.0
+    secrets:
+      VAULT_IAP_SA: ${{ secrets.VAULT_IAP_SA }}
+      VAULT_IAP_CLIENT_ID: ${{ secrets.VAULT_IAP_CLIENT_ID }}
