@@ -1,4 +1,4 @@
-{% macro iceberg_insert_columns(temp_view_name) %}
+{% macro cp_iceberg_insert_columns(temp_view_name) %}
 {% set model_columns = [] %}
 {# set model_columns = adapter.get_columns_in_relation(this) #}
  {% set desc_temp_view_sql %}
