@@ -1,4 +1,4 @@
-{% macro iceberg_update_columns(source, target, temp_view_name) %}
+{% macro cp_iceberg_update_columns(source, target, temp_view_name) %}
 {#{ log("SOURCE SQL = " ~ source, info=True)}#}
 {% set model_columns = [] %}
 {#  set model_columns = adapter.get_columns_in_relation(this)  #}
