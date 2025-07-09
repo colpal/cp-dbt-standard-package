@@ -1,4 +1,4 @@
-{% macro apply_masking_policy(table_name, policy_name, column_name, policy_args) %}
+{% macro cp_apply_masking_policy(table_name, policy_name, column_name, policy_args) %}
     {% set policy_args_list %}
     ({{ '"' }}{{ policy_args|join('", "') }}{{ '"' }})
     {% endset %}
