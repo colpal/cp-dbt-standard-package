@@ -1,4 +1,4 @@
-{% materialization  iceberg_table, default %}
+{% materialization  cp_iceberg_table, default %}
 {# Getting settings from model #}
     {% set catalog = model.config.get('catalog', 'SNOWFLAKE') %}
     {% set external_volume = model.config.get('external_volume', var('default_external_volume')) %}
