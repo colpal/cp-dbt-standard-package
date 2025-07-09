@@ -1,4 +1,4 @@
-{% macro drop_unneeded_objects(dry_run='false') %}
+{% macro cp_drop_unneeded_objects(dry_run='false') %}
 {% if execute %}
   {% set current_models=['DBT_STATE'] %}
   {% set models_type=['DBT_STATE.TABLE'] %}  
