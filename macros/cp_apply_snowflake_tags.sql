@@ -1,5 +1,5 @@
 {#
-  Snowflake Tagging Package (`dbt_snowflake_tagging`)
+  Snowflake Tagging Package (`cp_dbt_snowflake_tagging`)
   ----------------------------------------------------
     A set of macros to apply centrally created Snowflake tags to dbt models and columns
     based on configurations in schema YAML files.
@@ -30,7 +30,7 @@
 */
 
 -- set central tag schema
-{% macro get_tag_config() %}
+{% macro cp_get_tag_config() %}
     {% set config = {
         'tag_database': 'OPS_CUR',
         'tag_schema': 'TAGS'
@@ -39,7 +39,7 @@
 {% endmacro %}
 
 -- retrieve all available Snowflake tags from central schema
-{% macro get_snowflake_tags() %}
+{% macro cp_get_snowflake_tags() %}
     {% set config = get_tag_config() %}
     
     {% set sql %}
@@ -78,7 +78,7 @@
 {% endmacro %}
 
 -- apply tag to a model with validation
-{% macro apply_tag(schema, identifier, tag_name, tag_value, relation_type=none) %}
+{% macro cp_apply_tag(schema, identifier, tag_name, tag_value, relation_type=none) %}
     {# get available tags for validation #}
     {% set config = get_tag_config() %}
     {% set available_tags = dbt_snowflake_tagging.get_snowflake_tags() %}
@@ -144,7 +144,7 @@
     {{ log("Applied tag '" ~ tag_name ~ "' to " ~ schema ~ "." ~ identifier, info=true) }}
 {% endmacro %}
 
-{% macro apply_column_tag(schema, identifier, column_name, tag_name, tag_value, relation_type=none) %}
+{% macro cp_apply_column_tag(schema, identifier, column_name, tag_name, tag_value, relation_type=none) %}
     {# get available tags for validation #}
     {% set config = get_tag_config() %}
     {% set available_tags = get_snowflake_tags() %}
@@ -212,7 +212,7 @@
 {% endmacro %}
 
 -- process models and apply tags after run
-{% macro tag_models_on_run_end() %}
+{% macro cp_tag_models_on_run_end() %}
     {{ log("Starting tag application process", info=true) }}
     
     {% for node_id in graph.nodes %}
