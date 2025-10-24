@@ -1,8 +1,5 @@
 {% macro unset_query_tag(original_query_tag) -%}
 
-    {% set warehouseName = env_var('DBT_SF_WAREHOUSE') if warehouse else 'CP_DBT_XSMALL_WH_V2' %}
-    {% do run_query('USE WAREHOUSE "' ~ warehouseName.upper() ~ '"') %}
-
     {# Check if dbt_snowflake_query_tags is installed #}
     {% if adapter.check_macro_exists('dbt_snowflake_query_tags', 'unset_query_tag') %}
 
@@ -18,5 +15,8 @@
         {% endif %}
 
     {% endif %}
+
+    {% set warehouseName = env_var('DBT_SF_WAREHOUSE') if warehouse else 'CP_DBT_XSMALL_WH_V2' %}
+    {% do run_query('USE WAREHOUSE "' ~ warehouseName.upper() ~ '"') %}
 
 {% endmacro %}
