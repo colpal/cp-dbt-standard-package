@@ -26,6 +26,8 @@ clean-targets:         # directories to be removed by `dbt clean`
 
 models:
   +transient: false
+  dbt_snowflake_monitoring:
+    +schema: "UTIL_COMMON"
 
 #hook
 on-run-end:
