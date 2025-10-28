@@ -29,7 +29,7 @@
     }) %}
     
     {# Set query tag using available method #}
-    {% if adapter.check_macro_exists('dbt_snowflake_query_tags', 'unset_query_tag') %}
+    {% if dbt_snowflake_query_tags in context %}
         {# Use dbt_snowflake_query_tags package if available #}
         {% set result = adapter.dispatch('set_query_tag', 'dbt_snowflake_query_tags')(extra=merged_extra) %}
     {% else %}

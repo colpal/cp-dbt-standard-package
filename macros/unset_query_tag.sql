@@ -1,7 +1,7 @@
 {% macro unset_query_tag(original_query_tag) -%}
 
     {# Check if dbt_snowflake_query_tags is installed #}
-    {% if adapter.check_macro_exists('dbt_snowflake_query_tags', 'unset_query_tag') %}
+    {% if dbt_snowflake_query_tags in context %}
 
         {% do return(dbt_snowflake_query_tags.unset_query_tag(original_query_tag)) %}
 
