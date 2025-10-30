@@ -1,32 +1,4 @@
 /*
-{#
-  Snowflake Tagging Package (`dbt_snowflake_tagging`)
-  ----------------------------------------------------
-    A set of macros to apply centrally created Snowflake tags to dbt models and columns
-    based on configurations in schema YAML files.
-
-  Version: 1.0.0
-
-  ---------------- How to use ----------------
-
-  1. Update packages.yml and enable post-run hook as outlined in readme.
-
-  2. Usage - Define Tags on Models (in your model's `.yml` file):
-     models:
-       - name: my_model
-         config:
-           snowflake_tags:
-             IS_CERTIFIED: 'TRUE'
-         columns:
-           - name: column_name
-             meta:
-               snowflake_tags:
-                 TAG_NAME: 'tag_value_a'
-
-  -----------------------------------------------
-#}
-*/
-/*
     Snowflake tagging macros
 */
 
@@ -41,7 +13,7 @@
 
 -- retrieve all available Snowflake tags from central schema
 {% macro get_snowflake_tags() %}
-    {% set config = cp_dbt_standard_package.get_tag_config() %}
+    {% set config = get_tag_config() %}
     
     {% set sql %}
     SHOW TAGS IN SCHEMA {{ config.tag_database }}.{{ config.tag_schema }}
@@ -81,8 +53,8 @@
 -- apply tag to a model with validation
 {% macro apply_tag(database_nm, schema, identifier, tag_name, tag_value, relation_type=none) %}
     {# get available tags for validation #}
-    {% set config = cp_dbt_standard_package.get_tag_config() %}
-    {% set available_tags = cp_dbt_standard_package.get_snowflake_tags() %}
+    {% set config = get_tag_config() %}
+    {% set available_tags = get_snowflake_tags() %}
     
     {# use namespace for variables that need to persist outside the loop #}
     {% set ns = namespace(tag_exists=false, matching_tag="", allowed_values=[]) %}
@@ -98,8 +70,8 @@
     
     {# mismatch error #}
     {% if not ns.tag_exists %}
-        {% set message = "Tag '" ~ tag_name ~ "' does not exist in the central tag schema (" ~ config.tag_database ~ "." ~ config.tag_schema ~ "). Available tags are: " ~ (available_tags | map(attribute='tag_name') | list | join(', ')) %}
-        {{ exceptions.raise_compiler_error(message) }}
+        {{ log("ERROR: Tag '" ~ tag_name ~ "' doesn't exist in Snowflake. Tag will NOT be applied.", info=true) }}
+        {{ return() }}
     {% endif %}
     
     {# use the matched tag name for all further operations #}
@@ -126,9 +98,8 @@
         {% set tag_value = val_ns.matched_value %}
     {% endif %}
 
-    {% set database = target.database %}
-
     {% set relation = adapter.get_relation(database, schema, identifier) %}
+    
     {% if relation %}
         {% set relation_type = relation.type | upper %}
     {% else %}
@@ -145,10 +116,10 @@
     {{ log("Applied tag '" ~ tag_name ~ "' to " ~ schema ~ "." ~ identifier, info=true) }}
 {% endmacro %}
 
-{% macro apply_column_tag(database_nm, schema, identifier, column_name, tag_name, tag_value, relation_type=none) %}
+{% macro apply_column_tag(schema, identifier, column_name, tag_name, tag_value, relation_type=none) %}
     {# get available tags for validation #}
-    {% set config = cp_dbt_standard_package.get_tag_config() %}
-    {% set available_tags = cp_dbt_standard_package.get_snowflake_tags() %}
+    {% set config = get_tag_config() %}
+    {% set available_tags = get_snowflake_tags() %}
     
     {# use namespace for variables that need to persist outside the loop #}
     {% set ns = namespace(tag_exists=false, matching_tag="", allowed_values=[]) %}
@@ -203,7 +174,7 @@
 
     {# apply tag using fully qualified tag name #}
     {% set sql %}
-      ALTER {{ relation_type }} {{ database_nm }}.{{ schema }}.{{ identifier }} 
+      ALTER {{ relation_type }} {{ database }}.{{ schema }}.{{ identifier }} 
       MODIFY COLUMN {{ column_name }}
       SET TAG {{ config.tag_database }}.{{ config.tag_schema }}.{{ tag_name }} = '{{ tag_value }}'
     {% endset %}
@@ -220,13 +191,14 @@
         {% set node = graph.nodes[node_id] %}
         
         {% if node.resource_type == 'model' %}
+            {% set model_database= node.database %}
             {% set model_schema = node.schema %}
             {% set model_name = node.name %}
             
             {% if node.config.snowflake_tags is defined %}
-                {{ log("Processing table tags for " ~ model_name, info=true) }}
+                {{ log("Processing table tags for " ~ model_database ~ "." ~ model_schema ~ "." ~ model_name, info=true) }}
                 {% for tag_name, tag_value in node.config.snowflake_tags.items() %}
-                    {{ cp_dbt_standard_package.apply_tag(model_schema, model_name, tag_name, tag_value, 'TABLE') }}
+                    {{ apply_tag(model_database, model_schema, model_name, tag_name, tag_value, 'TABLE') }}
                 {% endfor %}
             {% endif %}
             
@@ -236,7 +208,7 @@
                     {% if column.meta is defined and column.meta.snowflake_tags is defined %}
                         {{ log("Processing column: " ~ column_name, info=true) }}
                         {% for tag_name, tag_value in column.meta.snowflake_tags.items() %}
-                            {{ cp_dbt_standard_package.apply_column_tag(model_schema, model_name, column_name, tag_name, tag_value, 'TABLE') }}
+                            {{ apply_column_tag(model_schema, model_name, column_name, tag_name, tag_value, 'TABLE') }}
                         {% endfor %}
                     {% endif %}
                 {% endfor %}
