@@ -78,7 +78,7 @@
 {% endmacro %}
 
 -- apply tag to a model with validation
-{% macro apply_tag(schema, identifier, tag_name, tag_value, relation_type=none) %}
+{% macro apply_tag(database_nm, schema, identifier, tag_name, tag_value, relation_type=none) %}
     {# get available tags for validation #}
     {% set config = cp_dbt_standard_package.get_tag_config() %}
     {% set available_tags = cp_dbt_standard_package.get_snowflake_tags() %}
@@ -136,7 +136,7 @@
 
     {# apply tag using fully qualified tag name #}
     {% set sql %}
-      ALTER {{ relation_type }} {{ database }}.{{ schema }}.{{ identifier }} 
+      ALTER {{ relation_type }} {{ database_nm }}.{{ schema }}.{{ identifier }} 
       SET TAG {{ config.tag_database }}.{{ config.tag_schema }}.{{ tag_name }} = '{{ tag_value }}'
     {% endset %}
 
@@ -144,7 +144,7 @@
     {{ log("Applied tag '" ~ tag_name ~ "' to " ~ schema ~ "." ~ identifier, info=true) }}
 {% endmacro %}
 
-{% macro apply_column_tag(schema, identifier, column_name, tag_name, tag_value, relation_type=none) %}
+{% macro apply_column_tag(database_nm, schema, identifier, column_name, tag_name, tag_value, relation_type=none) %}
     {# get available tags for validation #}
     {% set config = cp_dbt_standard_package.get_tag_config() %}
     {% set available_tags = cp_dbt_standard_package.get_snowflake_tags() %}
@@ -202,7 +202,7 @@
 
     {# apply tag using fully qualified tag name #}
     {% set sql %}
-      ALTER {{ relation_type }} {{ database }}.{{ schema }}.{{ identifier }} 
+      ALTER {{ relation_type }} {{ database_nm }}.{{ schema }}.{{ identifier }} 
       MODIFY COLUMN {{ column_name }}
       SET TAG {{ config.tag_database }}.{{ config.tag_schema }}.{{ tag_name }} = '{{ tag_value }}'
     {% endset %}
