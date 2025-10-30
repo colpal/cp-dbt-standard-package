@@ -1,3 +1,4 @@
+/*
 {#
   Snowflake Tagging Package (`dbt_snowflake_tagging`)
   ----------------------------------------------------
@@ -24,7 +25,7 @@
 
   -----------------------------------------------
 #}
-
+*/
 /*
     Snowflake tagging macros
 */
