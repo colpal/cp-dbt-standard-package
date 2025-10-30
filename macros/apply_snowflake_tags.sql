@@ -1,3 +1,30 @@
+{#
+  Snowflake Tagging Package (`dbt_snowflake_tagging`)
+  ----------------------------------------------------
+    A set of macros to apply centrally created Snowflake tags to dbt models and columns
+    based on configurations in schema YAML files.
+
+  Version: 1.0.0
+
+  ---------------- How to use ----------------
+
+  1. Update packages.yml and enable post-run hook as outlined in readme.
+
+  2. Usage - Define Tags on Models (in your model's `.yml` file):
+     models:
+       - name: my_model
+         config:
+           snowflake_tags:
+             IS_CERTIFIED: 'TRUE'
+         columns:
+           - name: column_name
+             meta:
+               snowflake_tags:
+                 TAG_NAME: 'tag_value_a'
+
+  -----------------------------------------------
+#}
+
 /*
     Snowflake tagging macros
 */
@@ -13,58 +40,42 @@
 
 -- retrieve all available Snowflake tags from central schema
 {% macro get_snowflake_tags() %}
-    {# Get centralized tag schema configuration #}
     {% set config = cp_dbt_standard_package.get_tag_config() %}
-
+    
     {% set sql %}
-        SHOW TAGS IN SCHEMA {{ config.tag_database }}.{{ config.tag_schema }}
+    SHOW TAGS IN SCHEMA {{ config.tag_database }}.{{ config.tag_schema }}
     {% endset %}
-
+    
     {{ log("Retrieving available tags from: " ~ config.tag_database ~ "." ~ config.tag_schema, info=true) }}
     {% set show_tags_query_output = run_query(sql) %}
-
+    
     {% set tag_list = [] %}
-
-    {% if execute and show_tags_query_output is not none %}
-        {# Extract rows and column names from the Agate table #}
-        {% set results = show_tags_query_output %}
-        {% set column_names = results.column_names | map('lower') | list %}
-
-        {# Ensure 'name' column exists; this prevents null reference issues #}
-        {% if 'name' not in column_names %}
-            {{ exceptions.raise_compiler_error("SHOW TAGS result missing 'name' column — check Snowflake privileges or schema existence.") }}
-        {% endif %}
-
-        {% set idx_name = column_names.index('name') %}
-        {% set idx_allowed = column_names.index('allowed_values') if 'allowed_values' in column_names else none %}
-
-        {% for row in results.rows %}
-            {% set tag_name = row[idx_name] | trim | upper %}
-            {% set allowed_vals_str = (row[idx_allowed] if idx_allowed is not none else "") | string %}
-
-            {# Parse allowed_values list (e.g., ["TRUE","FALSE"]) into clean array #}
+    
+    {% if execute %}
+        {% for row in show_tags_query_output %}
+            {% set tag_name = row["name"]|string %}
+            {% set allowed_vals_str = row["allowed_values"]|string if row["allowed_values"] is not none else "" %}
+            
+            {# process allowed values #}
             {% set allowed_values = [] %}
             {% if allowed_vals_str and allowed_vals_str.startswith("[") and allowed_vals_str.endswith("]") %}
                 {% set no_brackets = allowed_vals_str.strip("[]") %}
                 {% set raw_items = no_brackets.split(",") %}
                 {% for item in raw_items %}
-                    {% set clean_item = item | replace('"', "") | trim | upper %}
+                    {% set clean_item = item | replace('"', "") | trim %}
                     {% if clean_item != "" %}
                         {% do allowed_values.append(clean_item) %}
                     {% endif %}
                 {% endfor %}
             {% endif %}
-
+            
             {% do tag_list.append({'tag_name': tag_name, 'allowed_values': allowed_values}) %}
-            {{ log("Found tag: " ~ tag_name ~ " with allowed values: " ~ (allowed_values | join(', ')), info=true) }}
+            {{ log("Found tag: " ~ tag_name ~ " with allowed values: " ~ allowed_values, info=true) }}
         {% endfor %}
-    {% else %}
-        {{ log("No tags found or query not executed in parsing mode.", info=true) }}
     {% endif %}
-
+    
     {{ return(tag_list) }}
 {% endmacro %}
-
 
 -- apply tag to a model with validation
 {% macro apply_tag(schema, identifier, tag_name, tag_value, relation_type=none) %}
