@@ -113,7 +113,7 @@
         {% set tag_value = val_ns.matched_value %}
     {% endif %}
 
-    {% set relation = adapter.get_relation(database, schema, identifier) %}
+    {% set relation = adapter.get_relation(database_nm, schema, identifier) %}
     
     {% if relation %}
         {% set relation_type = relation.type | upper %}
@@ -131,7 +131,7 @@
     {{ log("Applied tag '" ~ tag_name ~ "' to " ~ schema ~ "." ~ identifier, info=true) }}
 {% endmacro %}
 
-{% macro apply_column_tag(schema, identifier, column_name, tag_name, tag_value, relation_type=none) %}
+{% macro apply_column_tag(database_nm, schema, identifier, column_name, tag_name, tag_value, relation_type=none) %}
     {# get available tags for validation #}
     {% set config = get_tag_config() %}
     {% set available_tags = get_snowflake_tags() %}
@@ -180,7 +180,7 @@
 
     {% set database = target.database %}
 
-    {% set relation = adapter.get_relation(database, schema, identifier) %}
+    {% set relation = adapter.get_relation(database_nm, schema, identifier) %}
     {% if relation %}
         {% set relation_type = relation.type | upper %}
     {% else %}
@@ -189,7 +189,7 @@
 
     {# apply tag using fully qualified tag name #}
     {% set sql %}
-      ALTER {{ relation_type }} {{ database }}.{{ schema }}.{{ identifier }} 
+      ALTER {{ relation_type }} {{ database_nm }}.{{ schema }}.{{ identifier }} 
       MODIFY COLUMN {{ column_name }}
       SET TAG {{ config.tag_database }}.{{ config.tag_schema }}.{{ tag_name }} = '{{ tag_value }}'
     {% endset %}
@@ -223,7 +223,7 @@
                     {% if column.meta is defined and column.meta.snowflake_tags is defined %}
                         {{ log("Processing column: " ~ column_name, info=true) }}
                         {% for tag_name, tag_value in column.meta.snowflake_tags.items() %}
-                            {{ apply_column_tag(model_schema, model_name, column_name, tag_name, tag_value, 'TABLE') }}
+                            {{ apply_column_tag(model_database, model_schema, model_name, column_name, tag_name, tag_value, 'TABLE') }}
                         {% endfor %}
                     {% endif %}
                 {% endfor %}
