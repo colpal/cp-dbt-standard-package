@@ -198,7 +198,7 @@
             {% if node.config.snowflake_tags is defined %}
                 {{ log("Processing table tags for " ~ model_database ~ "." ~ model_schema ~ "." ~ model_name, info=true) }}
                 {% for tag_name, tag_value in node.config.snowflake_tags.items() %}
-                    {{ cp_dbt_standard_package.apply_tag(model_database, model_schema, model_name, tag_name, tag_value, 'TABLE') }}
+                    {{ cp_dbt_standard_package.apply_tag(database_nm, model_schema, model_name, tag_name, tag_value, 'TABLE') }}
                 {% endfor %}
             {% endif %}
             
@@ -208,7 +208,7 @@
                     {% if column.meta is defined and column.meta.snowflake_tags is defined %}
                         {{ log("Processing column: " ~ column_name, info=true) }}
                         {% for tag_name, tag_value in column.meta.snowflake_tags.items() %}
-                            {{ cp_dbt_standard_package.apply_column_tag(model_database, model_schema, model_name, column_name, tag_name, tag_value, 'TABLE') }}
+                            {{ cp_dbt_standard_package.apply_column_tag(database_nm, model_schema, model_name, column_name, tag_name, tag_value, 'TABLE') }}
                         {% endfor %}
                     {% endif %}
                 {% endfor %}
