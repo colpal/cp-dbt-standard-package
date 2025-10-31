@@ -12,7 +12,7 @@
 {% endmacro %}
 
 -- retrieve all available Snowflake tags from central schema
-{% macro cp_dbt_standard_package.get_snowflake_tags() %}
+{% macro get_snowflake_tags() %}
     {% set config = get_tag_config() %}
     
     {% set sql %}
@@ -184,7 +184,7 @@
 {% endmacro %}
 
 -- process models and apply tags after run
-{% macro cp_dbt_standard_package.tag_models_on_run_end() %}
+{% macro tag_models_on_run_end() %}
     {{ log("Starting tag application process", info=true) }}
     
     {% for node_id in graph.nodes %}
