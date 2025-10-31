@@ -12,7 +12,7 @@
 {% endmacro %}
 
 -- retrieve all available Snowflake tags from central schema
-{% macro get_snowflake_tags() %}
+{% macro cp_dbt_standard_package.get_snowflake_tags() %}
     {% set config = get_tag_config() %}
     
     {% set sql %}
@@ -51,7 +51,7 @@
 {% endmacro %}
 
 -- apply tag to a model with validation
-{% macro apply_tag(database_nm, schema, identifier, tag_name, tag_value, relation_type=none) %}
+{% macro cp_dbt_standard_package.apply_tag(database_nm, schema, identifier, tag_name, tag_value, relation_type=none) %}
     {# get available tags for validation #}
     {% set config = get_tag_config() %}
     {% set available_tags = get_snowflake_tags() %}
@@ -116,7 +116,7 @@
     {{ log("Applied tag '" ~ tag_name ~ "' to " ~ schema ~ "." ~ identifier, info=true) }}
 {% endmacro %}
 
-{% macro apply_column_tag(schema, identifier, column_name, tag_name, tag_value, relation_type=none) %}
+{% macro cp_dbt_standard_package.apply_column_tag(schema, identifier, column_name, tag_name, tag_value, relation_type=none) %}
     {# get available tags for validation #}
     {% set config = get_tag_config() %}
     {% set available_tags = get_snowflake_tags() %}
@@ -184,7 +184,7 @@
 {% endmacro %}
 
 -- process models and apply tags after run
-{% macro tag_models_on_run_end() %}
+{% macro cp_dbt_standard_package.tag_models_on_run_end() %}
     {{ log("Starting tag application process", info=true) }}
     
     {% for node_id in graph.nodes %}
