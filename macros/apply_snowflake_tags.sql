@@ -51,7 +51,7 @@
 {% endmacro %}
 
 -- apply tag to a model with validation
-{% macro cp_dbt_standard_package.apply_tag(database_nm, schema, identifier, tag_name, tag_value, relation_type=none) %}
+{% macro apply_tag(database_nm, schema, identifier, tag_name, tag_value, relation_type=none) %}
     {# get available tags for validation #}
     {% set config = get_tag_config() %}
     {% set available_tags = get_snowflake_tags() %}
@@ -116,7 +116,7 @@
     {{ log("Applied tag '" ~ tag_name ~ "' to " ~ schema ~ "." ~ identifier, info=true) }}
 {% endmacro %}
 
-{% macro cp_dbt_standard_package.apply_column_tag(schema, identifier, column_name, tag_name, tag_value, relation_type=none) %}
+{% macro apply_column_tag(database_nm, schema, identifier, column_name, tag_name, tag_value, relation_type=none) %}
     {# get available tags for validation #}
     {% set config = get_tag_config() %}
     {% set available_tags = get_snowflake_tags() %}
@@ -198,7 +198,7 @@
             {% if node.config.snowflake_tags is defined %}
                 {{ log("Processing table tags for " ~ model_database ~ "." ~ model_schema ~ "." ~ model_name, info=true) }}
                 {% for tag_name, tag_value in node.config.snowflake_tags.items() %}
-                    {{ apply_tag(model_database, model_schema, model_name, tag_name, tag_value, 'TABLE') }}
+                    {{ cp_dbt_standard_package.apply_tag(model_database, model_schema, model_name, tag_name, tag_value, 'TABLE') }}
                 {% endfor %}
             {% endif %}
             
@@ -208,7 +208,7 @@
                     {% if column.meta is defined and column.meta.snowflake_tags is defined %}
                         {{ log("Processing column: " ~ column_name, info=true) }}
                         {% for tag_name, tag_value in column.meta.snowflake_tags.items() %}
-                            {{ apply_column_tag(model_schema, model_name, column_name, tag_name, tag_value, 'TABLE') }}
+                            {{ cp_dbt_standard_package.apply_column_tag(model_database, model_schema, model_name, column_name, tag_name, tag_value, 'TABLE') }}
                         {% endfor %}
                     {% endif %}
                 {% endfor %}
