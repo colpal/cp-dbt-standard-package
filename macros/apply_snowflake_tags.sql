@@ -150,7 +150,6 @@
     {# use the matched tag name for all further operations #}
     {% set tag_name = ns.matching_tag %}
     
-    {# validate allowed values if specified #}
     {% if ns.allowed_values | length > 0 %}
         {% set val_ns = namespace(is_valid=false, matched_value="") %}
         
@@ -176,9 +175,7 @@
         {% set tag_value = val_ns.matched_value %}
     {% endif %}
 
-    {% set database = target.database %}
-
-    {% set relation = adapter.get_relation(database, schema, identifier) %}
+    {% set relation = adapter.get_relation(database_nm, schema, identifier) %}
     {% if relation %}
         {% set relation_type = relation.type | upper %}
     {% else %}
@@ -187,7 +184,7 @@
 
     {# apply tag using fully qualified tag name #}
     {% set sql %}
-      ALTER {{ relation_type }} {{ database }}.{{ schema }}.{{ identifier }} 
+      ALTER {{ relation_type }} {{ database_nm }}.{{ schema }}.{{ identifier }} 
       MODIFY COLUMN {{ column_name }}
       SET TAG {{ config.tag_database }}.{{ config.tag_schema }}.{{ tag_name }} = '{{ tag_value }}'
     {% endset %}
@@ -197,7 +194,7 @@
         ~ tag_name ~
         "' to column "
         ~ column_name ~
-        " in " ~ schema ~ "." ~ identifier,
+        " in " ~ database_rm ~ "." ~ schema ~ "." ~ identifier,
         info=true) }}
 {% endmacro %}
 
