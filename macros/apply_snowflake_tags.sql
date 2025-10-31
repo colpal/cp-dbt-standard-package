@@ -13,7 +13,7 @@
 
 -- retrieve all available Snowflake tags from central schema
 {% macro get_snowflake_tags() %}
-    {% set config = cp_dbt_standard_package.get_tag_config() %}
+    {% set config = get_tag_config() %}
     
     {% set sql %}
     SHOW TAGS IN SCHEMA {{ config.tag_database }}.{{ config.tag_schema }}
@@ -53,8 +53,8 @@
 -- apply tag to a model with validation
 {% macro apply_tag(database_nm, schema, identifier, tag_name, tag_value, relation_type=none) %}
     {# get available tags for validation #}
-    {% set config = cp_dbt_standard_package.get_tag_config() %}
-    {% set available_tags = cp_dbt_standard_package.get_snowflake_tags() %}
+    {% set config = get_tag_config() %}
+    {% set available_tags = get_snowflake_tags() %}
     
     {# use namespace for variables that need to persist outside the loop #}
     {% set ns = namespace(tag_exists=false, matching_tag="", allowed_values=[]) %}
@@ -118,8 +118,8 @@
 
 {% macro apply_column_tag(database_nm, schema, identifier, column_name, tag_name, tag_value, relation_type=none) %}
     {# get available tags for validation #}
-    {% set config = cp_dbt_standard_package.get_tag_config() %}
-    {% set available_tags = cp_dbt_standard_package.get_snowflake_tags() %}
+    {% set config = get_tag_config() %}
+    {% set available_tags = get_snowflake_tags() %}
     
     {# use namespace for variables that need to persist outside the loop #}
     {% set ns = namespace(tag_exists=false, matching_tag="", allowed_values=[]) %}
@@ -198,7 +198,7 @@
             {% if node.config.snowflake_tags is defined %}
                 {{ log("Processing table tags for " ~ model_database ~ "." ~ model_schema ~ "." ~ model_name, info=true) }}
                 {% for tag_name, tag_value in node.config.snowflake_tags.items() %}
-                    {{ cp_dbt_standard_package.apply_tag(database_nm, model_schema, model_name, tag_name, tag_value, 'TABLE') }}
+                    {{ apply_tag(database_nm, model_schema, model_name, tag_name, tag_value, 'TABLE') }}
                 {% endfor %}
             {% endif %}
             
@@ -208,7 +208,7 @@
                     {% if column.meta is defined and column.meta.snowflake_tags is defined %}
                         {{ log("Processing column: " ~ column_name, info=true) }}
                         {% for tag_name, tag_value in column.meta.snowflake_tags.items() %}
-                            {{ cp_dbt_standard_package.apply_column_tag(database_nm, model_schema, model_name, column_name, tag_name, tag_value, 'TABLE') }}
+                            {{ apply_column_tag(database_nm, model_schema, model_name, column_name, tag_name, tag_value, 'TABLE') }}
                         {% endfor %}
                     {% endif %}
                 {% endfor %}
