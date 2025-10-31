@@ -214,28 +214,32 @@
 -- process models and apply tags after run
 {% macro tag_models_on_run_end() %}
     {{ log("Starting tag application process", info=true) }}
-    
+
     {% for node_id in graph.nodes %}
         {% set node = graph.nodes[node_id] %}
-        
+
         {% if node.resource_type == 'model' %}
+            {% set model_database = node.database %}
             {% set model_schema = node.schema %}
             {% set model_name = node.name %}
-            
-            {% if node.config.snowflake_tags is defined %}
-                {{ log("Processing table tags for " ~ model_name, info=true) }}
-                {% for tag_name, tag_value in node.config.snowflake_tags.items() %}
-                    {{ cp_dbt_standard_package.apply_tag(model_schema, model_name, tag_name, tag_value, 'TABLE') }}
+
+            {# ✅ Process table-level tags safely #}
+            {% set config = node.get('config', {}) %}
+            {% if config is mapping and config.get('snowflake_tags') is defined %}
+                {{ log("Processing table tags for " ~ model_schema ~ "." ~ model_name, info=true) }}
+                {% for tag_name, tag_value in config['snowflake_tags'].items() %}
+                    {{ cp_dbt_standard_package.apply_tag(model_database, model_schema, model_name, tag_name, tag_value, 'TABLE') }}
                 {% endfor %}
             {% endif %}
-            
-            {% if node.columns is defined %}
-                {{ log("Processing column tags for " ~ model_name, info=true) }}
+
+            {# ✅ Process column-level tags safely #}
+            {% if node.columns is defined and node.columns is mapping %}
                 {% for column_name, column in node.columns.items() %}
-                    {% if column.meta is defined and column.meta.snowflake_tags is defined %}
+                    {% set meta = column.get('meta', {}) %}
+                    {% if meta is mapping and meta.get('snowflake_tags') is defined %}
                         {{ log("Processing column: " ~ column_name, info=true) }}
-                        {% for tag_name, tag_value in column.meta.snowflake_tags.items() %}
-                            {{ cp_dbt_standard_package.apply_column_tag(model_schema, model_name, column_name, tag_name, tag_value, 'TABLE') }}
+                        {% for tag_name, tag_value in meta['snowflake_tags'].items() %}
+                            {{ cp_dbt_standard_package.apply_column_tag(model_database, model_schema, model_name, column_name, tag_name, tag_value, 'TABLE') }}
                         {% endfor %}
                     {% endif %}
                 {% endfor %}
@@ -243,3 +247,4 @@
         {% endif %}
     {% endfor %}
 {% endmacro %}
+
