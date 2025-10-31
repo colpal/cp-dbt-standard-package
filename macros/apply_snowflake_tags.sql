@@ -1,3 +1,30 @@
+{#
+  Snowflake Tagging Package (`dbt_snowflake_tagging`)
+  ----------------------------------------------------
+    A set of macros to apply centrally created Snowflake tags to dbt models and columns
+    based on configurations in schema YAML files.
+
+  Version: 1.0.0
+
+  ---------------- How to use ----------------
+
+  1. Update packages.yml and enable post-run hook as outlined in readme.
+
+  2. Usage - Define Tags on Models (in your model's `.yml` file):
+     models:
+       - name: my_model
+         config:
+           snowflake_tags:
+             IS_CERTIFIED: 'TRUE'
+         columns:
+           - name: column_name
+             meta:
+               snowflake_tags:
+                 TAG_NAME: 'tag_value_a'
+
+  -----------------------------------------------
+#}
+
 /*
     Snowflake tagging macros
 */
