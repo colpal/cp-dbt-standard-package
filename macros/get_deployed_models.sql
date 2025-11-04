@@ -1,13 +1,25 @@
-{% macro get_deployed_models(results) %}
+{% macro get_deployed_models() %}
     {# 
-      Returns a JSON list of successfully deployed model unique_ids 
-      so it can be passed to tagging macro or logged.
+      Returns a JSON array of successfully deployed model unique_ids
+      Works even when run after dbt build (reads from target/run_results.json)
     #}
+    {% set results_path = target.path ~ '/run_results.json' %}
+
+    {% if not execute %}
+        {{ return('[]') }}
+    {% endif %}
+
+    {% do log("Reading deployed models from: " ~ results_path, info=true) %}
+
+    {% set results_data = load_file(results_path) | fromjson %}
     {% set deployed = [] %}
-    {% for r in results %}
-        {% if r.status == 'success' and r.node.resource_type == 'model' %}
-            {% do deployed.append(r.node.unique_id) %}
+
+    {% for result in results_data.results %}
+        {% if result.status == 'success' and result.node.resource_type == 'model' %}
+            {% do deployed.append(result.node.unique_id) %}
         {% endif %}
     {% endfor %}
+
+    {{ log("Deployed models found: " ~ deployed, info=true) }}
     {{ return(tojson(deployed)) }}
 {% endmacro %}
