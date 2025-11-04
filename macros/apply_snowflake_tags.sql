@@ -226,38 +226,61 @@
 {% endmacro %}
 
 -- process models and apply tags after run
-{% macro tag_models_on_run_end() %}
+{% macro tag_models_on_run_end(changed_models=none) %}
     {{ log("Starting tag application process", info=true) }}
-    
-    {% for node_id in graph.nodes %}
-        {% set node = graph.nodes[node_id] %}
-        
-        {% if node.resource_type == 'model' %}
-            {% set model_database= node.database %}
-            {% set model_schema = node.schema %}
-            {% set model_name = node.name %}
-            
-            {% if node.config.snowflake_tags is defined %}
-                {{ log("Processing table tags for "
-                    ~ model_database ~
-                    "." ~ model_schema ~ "." ~ model_name,
-                    info=true) }}
-                {% for tag_name, tag_value in node.config.snowflake_tags.items() %}
-                    {{ cp_dbt_standard_package.apply_tag(model_database, model_schema, model_name, tag_name, tag_value, 'TABLE') }}
-                {% endfor %}
+
+    {# Handle stringified JSON input #}
+    {% if changed_models is string %}
+        {% set changed_models = fromjson(changed_models) %}
+    {% endif %}
+
+    {% set selective_tagging = changed_models is not none and changed_models | length > 0 %}
+    {% if selective_tagging %}
+        {{ log("Selective tagging enabled — applying tags only to changed models: " ~ changed_models, info=true) }}
+    {% else %}
+        {{ log("No changed_models provided — tagging all dbt models.", info=true) }}
+        {% set changed_models = graph.nodes.keys() %}
+    {% endif %}
+
+    {# Loop only through provided (or default) models #}
+    {% for node_id in changed_models %}
+        {% if graph.nodes.get(node_id) is not none %}
+            {% set node = graph.nodes[node_id] %}
+            {% if node.resource_type == 'model' %}
+                {% set model_database = node.database %}
+                {% set model_schema = node.schema %}
+                {% set model_name = node.name %}
+
+                {{ log("Applying tags for " ~ node_id, info=true) }}
+
+                {# Table-level tags #}
+                {% if node.config.snowflake_tags is defined %}
+                    {% for tag_name, tag_value in node.config.snowflake_tags.items() %}
+                        {{ cp_dbt_standard_package.apply_tag(
+                            model_database, model_schema, model_name, tag_name, tag_value, 'TABLE'
+                        ) }}
+                    {% endfor %}
+                {% endif %}
+
+                {# Column-level tags #}
+                {% if node.columns is defined %}
+                    {% for column_name, column in node.columns.items() %}
+                        {% if column.meta is defined and column.meta.snowflake_tags is defined %}
+                            {% for tag_name, tag_value in column.meta.snowflake_tags.items() %}
+                                {{ cp_dbt_standard_package.apply_column_tag(
+                                    model_database, model_schema, model_name,
+                                    column_name, tag_name, tag_value, 'TABLE'
+                                ) }}
+                            {% endfor %}
+                        {% endif %}
+                    {% endfor %}
+                {% endif %}
             {% endif %}
-            
-            {% if node.columns is defined %}
-                {{ log("Processing column tags for " ~ model_name, info=true) }}
-                {% for column_name, column in node.columns.items() %}
-                    {% if column.meta is defined and column.meta.snowflake_tags is defined %}
-                        {{ log("Processing column: " ~ column_name, info=true) }}
-                        {% for tag_name, tag_value in column.meta.snowflake_tags.items() %}
-                            {{ cp_dbt_standard_package.apply_column_tag(model_database, model_schema, model_name, column_name, tag_name, tag_value, 'TABLE') }}
-                        {% endfor %}
-                    {% endif %}
-                {% endfor %}
-            {% endif %}
+        {% else %}
+            {{ log("Warning: Node " ~ node_id ~ " not found in graph; skipping.", info=true) }}
         {% endif %}
     {% endfor %}
+
+    {{ log("Snowflake tagging process completed successfully.", info=true) }}
 {% endmacro %}
+
