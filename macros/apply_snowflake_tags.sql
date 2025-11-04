@@ -226,64 +226,82 @@
 {% endmacro %}
 
 -- process models and apply tags after run
-{% macro tag_models_on_run_end(changed_models=none) %}
+{% macro tag_models_on_run_end(changed_models=none, propagate_downstream=true) %}
     {{ log("Starting tag application process", info=true) }}
 
-    {# Handle JSON string input (from dbt run-operation --args) #}
     {% if changed_models is string %}
         {% set changed_models = fromjson(changed_models) %}
     {% endif %}
 
-    {# Determine if selective tagging should be applied #}
     {% set selective_tagging = changed_models is not none and changed_models | length > 0 %}
-
     {% if selective_tagging %}
-        {{ log("Selective tagging enabled — applying tags only to changed or updated models.", info=true) }}
-        {{ log("Changed models: " ~ changed_models, info=true) }}
-    {% else %}
-        {{ log("No changed_models provided — tagging all dbt models.", info=true) }}
+        {{ log("Selective tagging enabled — changed models: " ~ changed_models, info=true) }}
     {% endif %}
 
-    {# Loop through dbt graph nodes #}
-    {% for node_id, node in graph.nodes.items() %}
-        {% if node.resource_type == 'model' %}
+    {% if propagate_downstream %}
+        {{ log("Downstream propagation enabled.", info=true) }}
+    {% else %}
+        {{ log("Downstream propagation disabled.", info=true) }}
+    {% endif %}
 
-            {# Skip models not in changed_models when selective tagging is enabled #}
-            {% if selective_tagging and node.unique_id not in changed_models %}
-                {{ log("Skipping unchanged model: " ~ node.unique_id, info=true) }}
-                {% continue %}
+    {# Helper recursive macro to collect all downstream nodes #}
+    {% macro get_downstream_models(model_id, visited=[]) %}
+        {% set children = graph.child_map.get(model_id, []) %}
+        {% for child in children %}
+            {% if child not in visited %}
+                {% do visited.append(child) %}
+                {% do visited.extend(cp_dbt_standard_package.get_downstream_models(child, visited)) %}
             {% endif %}
+        {% endfor %}
+        {{ return(visited) }}
+    {% endmacro %}
 
+    {# Gather all models to tag: changed + downstream #}
+    {% set models_to_tag = [] %}
+    {% if selective_tagging %}
+        {% do models_to_tag.extend(changed_models) %}
+
+        {% if propagate_downstream %}
+            {% for m in changed_models %}
+                {% set downstream_nodes = cp_dbt_standard_package.get_downstream_models(m, []) %}
+                {% for node in downstream_nodes %}
+                    {% if node not in models_to_tag %}
+                        {% do models_to_tag.append(node) %}
+                    {% endif %}
+                {% endfor %}
+            {% endfor %}
+        {% endif %}
+    {% else %}
+        {% set models_to_tag = graph.nodes.keys() %}
+    {% endif %}
+
+    {{ log("Final tagging list: " ~ models_to_tag, info=true) }}
+
+    {# Process all models in the final list #}
+    {% for node_id in models_to_tag %}
+        {% set node = graph.nodes[node_id] %}
+        {% if node.resource_type == 'model' %}
             {% set model_database = node.database %}
             {% set model_schema = node.schema %}
             {% set model_name = node.name %}
 
-            {{ log("Processing tags for model: " ~ model_database ~ "." ~ model_schema ~ "." ~ model_name, info=true) }}
+            {{ log("Applying tags for " ~ node_id, info=true) }}
 
-            {# Apply table-level tags #}
             {% if node.config.snowflake_tags is defined %}
                 {% for tag_name, tag_value in node.config.snowflake_tags.items() %}
-                    {{ cp_dbt_standard_package.apply_tag(
-                        model_database, model_schema, model_name,
-                        tag_name, tag_value, 'TABLE'
-                    ) }}
+                    {{ cp_dbt_standard_package.apply_tag(model_database, model_schema, model_name, tag_name, tag_value, 'TABLE') }}
                 {% endfor %}
             {% endif %}
 
-            {# Apply column-level tags #}
             {% if node.columns is defined %}
                 {% for column_name, column in node.columns.items() %}
                     {% if column.meta is defined and column.meta.snowflake_tags is defined %}
                         {% for tag_name, tag_value in column.meta.snowflake_tags.items() %}
-                            {{ cp_dbt_standard_package.apply_column_tag(
-                                model_database, model_schema, model_name,
-                                column_name, tag_name, tag_value, 'TABLE'
-                            ) }}
+                            {{ cp_dbt_standard_package.apply_column_tag(model_database, model_schema, model_name, column_name, tag_name, tag_value, 'TABLE') }}
                         {% endfor %}
                     {% endif %}
                 {% endfor %}
             {% endif %}
-
         {% endif %}
     {% endfor %}
 
