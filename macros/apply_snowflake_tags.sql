@@ -230,38 +230,41 @@
     {% if env_var('WORKFLOW_NAME', '') == 'Initialize DBT Artifact' %}
       {{ return('') }}
     {% endif %}
-  
-    {{ log("Starting tag application process", info=true) }}
-    
-    {% for node_id in graph.nodes %}
-        {% set node = graph.nodes[node_id] %}
-        
-        {% if node.resource_type == 'model' %}
-            {% set model_database= node.database %}
-            {% set model_schema = node.schema %}
-            {% set model_name = node.name %}
+
+    {{ log("Starting tag application process for successfully deployed models", info=true) }}
+
+    {% if execute and results is defined %}
+        {% for result in results %}
+            {% set node = result.node %}
             
-            {% if node.config.snowflake_tags is defined %}
-                {{ log("Processing table tags for "
-                    ~ model_database ~
-                    "." ~ model_schema ~ "." ~ model_name,
-                    info=true) }}
-                {% for tag_name, tag_value in node.config.snowflake_tags.items() %}
-                    {{ cp_dbt_standard_package.apply_tag(model_database, model_schema, model_name, tag_name, tag_value, 'TABLE') }}
-                {% endfor %}
+            {% if node.resource_type == 'model' and result.status == 'success' %}
+                {% set model_database = node.database %}
+                {% set model_schema = node.schema %}
+                {% set model_name = node.name %}
+
+                {{ log("Tagging model: " ~ model_database ~ "." ~ model_schema ~ "." ~ model_name, info=true) }}
+
+                {# --- Apply table-level tags --- #}
+                {% if node.config.snowflake_tags is defined %}
+                    {% for tag_name, tag_value in node.config.snowflake_tags.items() %}
+                        {{ cp_dbt_standard_package.apply_tag(model_database, model_schema, model_name, tag_name, tag_value, 'TABLE') }}
+                    {% endfor %}
+                {% endif %}
+
+                {# --- Apply column-level tags --- #}
+                {% if node.columns is defined %}
+                    {% for column_name, column in node.columns.items() %}
+                        {% if column.meta is defined and column.meta.snowflake_tags is defined %}
+                            {% for tag_name, tag_value in column.meta.snowflake_tags.items() %}
+                                {{ cp_dbt_standard_package.apply_column_tag(model_database, model_schema, model_name, column_name, tag_name, tag_value, 'TABLE') }}
+                            {% endfor %}
+                        {% endif %}
+                    {% endfor %}
+                {% endif %}
             {% endif %}
-            
-            {% if node.columns is defined %}
-                {{ log("Processing column tags for " ~ model_name, info=true) }}
-                {% for column_name, column in node.columns.items() %}
-                    {% if column.meta is defined and column.meta.snowflake_tags is defined %}
-                        {{ log("Processing column: " ~ column_name, info=true) }}
-                        {% for tag_name, tag_value in column.meta.snowflake_tags.items() %}
-                            {{ cp_dbt_standard_package.apply_column_tag(model_database, model_schema, model_name, column_name, tag_name, tag_value, 'TABLE') }}
-                        {% endfor %}
-                    {% endif %}
-                {% endfor %}
-            {% endif %}
-        {% endif %}
-    {% endfor %}
+        {% endfor %}
+    {% else %}
+        {{ log("No results found or not in execute context — skipping tagging.", info=true) }}
+    {% endif %}
 {% endmacro %}
+
