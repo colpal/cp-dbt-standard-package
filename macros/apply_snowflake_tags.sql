@@ -233,14 +233,15 @@
         {{ return('[]') }}
     {% endif %}
 
-    {# 1️⃣ Locate and load run_results.json #}
+    {# 1️⃣ Try to load target/run_results.json #}
     {% set results_path = project_root ~ '/target/run_results.json' %}
-    {% if not os.path.exists(results_path) %}
-        {{ log("No run_results.json found — skipping tagging.", info=true) }}
+    {% set file_content = load_file(results_path) %}
+
+    {% if file_content is none or file_content | length == 0 %}
+        {{ log("No run_results.json found or file is empty — skipping tagging.", info=true) }}
         {{ return('[]') }}
     {% endif %}
 
-    {% set file_content = load_file(results_path) %}
     {% set results_data = fromjson(file_content) %}
 
     {# 2️⃣ Collect all successfully deployed models #}
@@ -288,5 +289,6 @@
         {% endif %}
     {% endfor %}
 
-    {{ log("Snowflake tagging completed successfully for deployed models.", info=true) }}
+    {{ log("✅ Snowflake tagging completed successfully for deployed models.", info=true) }}
 {% endmacro %}
+
