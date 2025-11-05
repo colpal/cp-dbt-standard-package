@@ -228,7 +228,7 @@
 -- process models and apply tags after run
 {% macro tag_models_on_run_end() %}
     {% if env_var('WORKFLOW_NAME', '') == 'Initialize DBT Artifact' %}
-      {{ return() }}
+      {{ return('') }}
     {% endif %}
   
     {{ log("Starting tag application process", info=true) }}
