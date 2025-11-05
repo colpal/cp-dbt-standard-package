@@ -221,15 +221,12 @@
         ~ tag_name ~
         "' to column "
         ~ column_name ~
-        " in " ~ database_rm ~ "." ~ schema ~ "." ~ identifier,
+        " in " ~ database_nm ~ "." ~ schema ~ "." ~ identifier,
         info=true) }}
 {% endmacro %}
 
 -- process models and apply tags after run
 {% macro tag_models_on_run_end() %}
-    {% if env_var('WORKFLOW_NAME', '') == 'Initialize DBT Artifact' %}
-      {{ return('') }}
-    {% endif %}
 
     {{ log("Starting tag application process for successfully deployed models", info=true) }}
 
