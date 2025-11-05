@@ -240,7 +240,8 @@
         {{ return('[]') }}
     {% endif %}
 
-    {% set results_data = load_file(results_path) | fromjson %}
+    {% set file_content = load_file(results_path) %}
+    {% set results_data = fromjson(file_content) %}
 
     {# 2️⃣ Collect all successfully deployed models #}
     {% set deployed_models = [] %}
@@ -287,6 +288,5 @@
         {% endif %}
     {% endfor %}
 
-    {{ log("✅ Snowflake tagging completed successfully for deployed models.", info=true) }}
+    {{ log("Snowflake tagging completed successfully for deployed models.", info=true) }}
 {% endmacro %}
-
