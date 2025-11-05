@@ -227,68 +227,62 @@
 
 -- process models and apply tags after run
 {% macro tag_models_on_run_end() %}
-    {{ log("Starting Snowflake tagging process...", info=true) }}
+    {{ log("🚀 Starting Snowflake tagging process (dbt-native)...", info=true) }}
 
     {% if not execute %}
         {{ return('[]') }}
     {% endif %}
 
-    {# 1️⃣ Try to load target/run_results.json #}
-    {% set results_path = project_root ~ '/target/run_results.json' %}
-    {% set file_content = load_file(results_path) %}
-
-    {% if file_content is none or file_content | length == 0 %}
-        {{ log("No run_results.json found or file is empty — skipping tagging.", info=true) }}
+    {# ✅ Ensure run_results is available #}
+    {% if run_results is not defined %}
+        {{ log("⚠️ No run_results available in context — skipping tagging.", info=true) }}
         {{ return('[]') }}
     {% endif %}
 
-    {% set results_data = fromjson(file_content) %}
-
-    {# 2️⃣ Collect all successfully deployed models #}
+    {# ✅ Collect successfully deployed models only #}
     {% set deployed_models = [] %}
-    {% for r in results_data.results %}
-        {% if r.status == 'success' and r.node.resource_type == 'model' %}
-            {% do deployed_models.append(r.node.unique_id) %}
+    {% for result in run_results %}
+        {% if result.node.resource_type == 'model' and result.status == 'success' %}
+            {% do deployed_models.append(result.node.unique_id) %}
         {% endif %}
     {% endfor %}
 
     {% if deployed_models | length == 0 %}
-        {{ log("No deployed models found in run_results.json — skipping tagging.", info=true) }}
+        {{ log("ℹ️ No successfully deployed models found — skipping tagging.", info=true) }}
         {{ return('[]') }}
     {% endif %}
 
-    {{ log("Deployed models detected: " ~ deployed_models, info=true) }}
+    {{ log("📦 Deployed models: " ~ deployed_models, info=true) }}
 
-    {# 3️⃣ Apply Snowflake tags for those models only #}
-    {% for model_id in deployed_models %}
-        {% set node = graph.nodes[model_id] %}
-        {% if node.resource_type == 'model' %}
-            {{ log("Applying tags for model: " ~ node.name, info=true) }}
-            
-            {% set model_database = node.database %}
-            {% set model_schema = node.schema %}
-            {% set model_name = node.name %}
-            
-            {# Apply model-level tags #}
-            {% if node.config.snowflake_tags is defined %}
-                {% for tag_name, tag_value in node.config.snowflake_tags.items() %}
-                    {{ cp_dbt_standard_package.apply_tag(model_database, model_schema, model_name, tag_name, tag_value, 'TABLE') }}
-                {% endfor %}
-            {% endif %}
-            
-            {# Apply column-level tags #}
-            {% if node.columns is defined %}
-                {% for col_name, col_def in node.columns.items() %}
-                    {% if col_def.meta is defined and col_def.meta.snowflake_tags is defined %}
-                        {% for tag_name, tag_value in col_def.meta.snowflake_tags.items() %}
-                            {{ cp_dbt_standard_package.apply_column_tag(model_database, model_schema, model_name, col_name, tag_name, tag_value, 'TABLE') }}
-                        {% endfor %}
-                    {% endif %}
-                {% endfor %}
-            {% endif %}
+    {# ✅ Apply Snowflake tags for each model #}
+    {% for node_id in deployed_models %}
+        {% set node = graph.nodes[node_id] %}
+        {% set model_database = node.database %}
+        {% set model_schema = node.schema %}
+        {% set model_name = node.name %}
+        {% set materialization = node.config.materialized | default('view') %}
+        {% set object_type = 'TABLE' if materialization == 'table' else 'VIEW' %}
+
+        {{ log("🏷️ Applying tags for " ~ model_schema ~ "." ~ model_name ~ " (" ~ object_type ~ ")", info=true) }}
+
+        {# 🔹 Table/View-level tags #}
+        {% if node.config.snowflake_tags is defined %}
+            {% for tag_name, tag_value in node.config.snowflake_tags.items() %}
+                {{ cp_dbt_standard_package.apply_tag(model_database, model_schema, model_name, tag_name, tag_value, object_type) }}
+            {% endfor %}
+        {% endif %}
+
+        {# 🔹 Column-level tags #}
+        {% if node.columns is defined %}
+            {% for col_name, col_def in node.columns.items() %}
+                {% if col_def.meta is defined and col_def.meta.snowflake_tags is defined %}
+                    {% for tag_name, tag_value in col_def.meta.snowflake_tags.items() %}
+                        {{ cp_dbt_standard_package.apply_column_tag(model_database, model_schema, model_name, col_name, tag_name, tag_value, object_type) }}
+                    {% endfor %}
+                {% endif %}
+            {% endfor %}
         {% endif %}
     {% endfor %}
 
     {{ log("✅ Snowflake tagging completed successfully for deployed models.", info=true) }}
 {% endmacro %}
-
