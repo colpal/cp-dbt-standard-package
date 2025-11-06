@@ -221,34 +221,49 @@
         ~ tag_name ~
         "' to column "
         ~ column_name ~
-        " in " ~ database_nm ~ "." ~ schema ~ "." ~ identifier,
+        " in " ~ database_rm ~ "." ~ schema ~ "." ~ identifier,
         info=true) }}
 {% endmacro %}
 
 -- process models and apply tags after run
-{% macro tag_models_on_run_end() %}
+{% macro tag_models_on_run_end(changed_models=None) %}
+    {{ log("Starting tag application process", info=true) }}
 
-    {{ log("Starting tag application process for successfully deployed models", info=true) }}
+    {# 1️⃣ Handle optional input (JSON from workflow) #}
+    {% if changed_models is string %}
+        {% set changed_models = fromjson(changed_models) %}
+    {% endif %}
 
-    {% if execute and results is defined %}
-        {% for result in results %}
-            {% set node = result.node %}
-            
-            {% if node.resource_type == 'model' and result.status == 'success' %}
+    {# 2️⃣ Choose models to process: only deployed ones if provided #}
+    {% if not changed_models or changed_models | length == 0 %}
+        {{ log("No changed_models provided — tagging all dbt models.", info=true) }}
+        {% set models_to_tag = graph.nodes.keys() %}
+    {% else %}
+        {{ log("Selective tagging mode — tagging only deployed models: " ~ changed_models, info=true) }}
+        {% set models_to_tag = changed_models %}
+    {% endif %}
+
+    {# 3️⃣ Loop through each model in the filtered list #}
+    {% for node_id in models_to_tag %}
+        {% if node_id in graph.nodes %}
+            {% set node = graph.nodes[node_id] %}
+
+            {% if node.resource_type == 'model' %}
                 {% set model_database = node.database %}
                 {% set model_schema = node.schema %}
                 {% set model_name = node.name %}
 
-                {{ log("Tagging model: " ~ model_database ~ "." ~ model_schema ~ "." ~ model_name, info=true) }}
+                {{ log("Processing model: " ~ model_database ~ "." ~ model_schema ~ "." ~ model_name, info=true) }}
 
-                {# --- Apply table-level tags --- #}
+                {# --- Table-level tags --- #}
                 {% if node.config.snowflake_tags is defined %}
+                    {{ log("Applying table-level tags for " ~ model_name, info=true) }}
                     {% for tag_name, tag_value in node.config.snowflake_tags.items() %}
                         {{ cp_dbt_standard_package.apply_tag(model_database, model_schema, model_name, tag_name, tag_value, 'TABLE') }}
                     {% endfor %}
                 {% endif %}
 
-                {# --- Apply column-level tags --- #}
+                {# --- Column-level tags --- #}
                 {% if node.columns is defined %}
                     {% for column_name, column in node.columns.items() %}
                         {% if column.meta is defined and column.meta.snowflake_tags is defined %}
@@ -259,9 +274,10 @@
                     {% endfor %}
                 {% endif %}
             {% endif %}
-        {% endfor %}
-    {% else %}
-        {{ log("No results found or not in execute context — skipping tagging.", info=true) }}
-    {% endif %}
-{% endmacro %}
+        {% else %}
+            {{ log("⚠️ Skipping model ID not found in graph: " ~ node_id, info=true) }}
+        {% endif %}
+    {% endfor %}
 
+    {{ log("✅ Tag application process completed successfully.", info=true) }}
+{% endmacro %}
