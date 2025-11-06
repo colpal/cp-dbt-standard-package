@@ -229,21 +229,21 @@
 {% macro tag_models_on_run_end(changed_models=None) %}
     {{ log("Starting tag application process", info=true) }}
 
-    {# 1️⃣ Handle optional input (JSON from workflow) #}
+    {# Code to handle optional input (JSON from workflow) #}
     {% if changed_models is string %}
         {% set changed_models = fromjson(changed_models) %}
     {% endif %}
 
-    {# 2️⃣ Choose models to process: only deployed ones if provided #}
+    {# Choose models to process: only deployed ones if provided #}
     {% if not changed_models or changed_models | length == 0 %}
-        {{ log("No changed_models provided — tagging all dbt models.", info=true) }}
-        {% set models_to_tag = graph.nodes.keys() %}
+        {{ log("No changed_models provided — skipping tagging models.", info=true) }}
+        {% set models_to_tag = [] %}
     {% else %}
-        {{ log("Selective tagging mode — tagging only deployed models: " ~ changed_models, info=true) }}
+        {{ log("Applying tags to deployed models: " ~ changed_models, info=true) }}
         {% set models_to_tag = changed_models %}
     {% endif %}
 
-    {# 3️⃣ Loop through each model in the filtered list #}
+    {# Loop through each model in the model list #}
     {% for node_id in models_to_tag %}
         {% if node_id in graph.nodes %}
             {% set node = graph.nodes[node_id] %}
@@ -275,9 +275,9 @@
                 {% endif %}
             {% endif %}
         {% else %}
-            {{ log("⚠️ Skipping model ID not found in graph: " ~ node_id, info=true) }}
+            {{ log("Skipping models not found in graph: " ~ node_id, info=true) }}
         {% endif %}
     {% endfor %}
 
-    {{ log("✅ Tag application process completed successfully.", info=true) }}
+    {{ log("Tag application process completed successfully.", info=true) }}
 {% endmacro %}
