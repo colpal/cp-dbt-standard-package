@@ -28,7 +28,19 @@ models:
   +transient: false
   dbt_snowflake_monitoring:
     +enabled: false
-
+vars:
+  cp_dbt_standard_package:
+    enable_artifact_upload: true
 #hook
 on-run-end:
   - "{{ dbt_artifacts.upload_results(results) if (env_var('DBT_ARTIFACTS_DATABASE', 'not-set') != 'not-set' )}}"
+  - >
+    {% if var('cp_dbt_standard_package').get('enable_artifact_upload', true)
+         and env_var('DBT_ARTIFACTS_DATABASE', '') != '' %}
+
+         {{ run_query("USE DATABASE " ~ env_var('DBT_ARTIFACTS_DATABASE')) }}
+         {{ run_query("USE SCHEMA " ~ env_var('DBT_ARTIFACTS_SCHEMA')) }}
+
+         {{ dbt_artifacts.upload_results(results) }}
+
+    {% endif %}
