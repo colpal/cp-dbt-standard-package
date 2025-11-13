@@ -30,4 +30,6 @@
     {% set result = adapter.dispatch('set_query_tag', 'dbt_snowflake_query_tags')(extra=merged_extra) %}
     {% do run_query('USE WAREHOUSE "' ~ warehouseName.upper() ~ '"') %}
 
+    {{ return(result) }}
+
 {%- endmacro %}
