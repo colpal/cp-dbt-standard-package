@@ -32,5 +32,5 @@ vars:
   cp_dbt_standard_package:
     enable_artifact_upload: true
 #hook
-#on-run-end:
-#  - "{{ dbt_artifacts.upload_results(results) if (env_var('DBT_ARTIFACTS_DATABASE', 'not-set') != 'not-set' )}}"
+on-run-end:
+  - "{{ dbt_artifacts.upload_results(results) if (env_var('DBT_ARTIFACTS_DATABASE', 'not-set') != 'not-set' )}}"
