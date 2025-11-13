@@ -1,4 +1,7 @@
 {% macro set_query_tag(extra = {}) -%}
+    {% if not model is defined %}
+        {% do return(None) %}
+    {% endif %}
     {% set model_name = model.name %}
     {% set model_schema = model.schema if model.schema is not none else target.schema %}
     {% set model_database = model.database if model.database is not none else target.database %}
