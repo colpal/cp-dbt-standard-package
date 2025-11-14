@@ -24,10 +24,5 @@ clean-targets:         # directories to be removed by `dbt clean`
   - "target"
   - "dbt_modules"
 
-models:
-  dbt_snowflake_monitoring:
-    +database: "{{ env_var('DBT_ARTIFACTS_DATABASE')}}"
-    +schema: "{{ env_var('DBT_ARTIFACTS_SCHEMA')}}"
-
 on-run-end:
   - "{{ dbt_artifacts.upload_results(results) if (env_var('DBT_ARTIFACTS_DATABASE', 'not-set') != 'not-set' )}}"
