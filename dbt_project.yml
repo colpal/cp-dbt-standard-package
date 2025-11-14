@@ -35,6 +35,10 @@ vars:
     artifacts_schema: "{{ env_var('DBT_ARTIFACTS_SCHEMA', '') }}"
 
 on-run-end:
-  - "{{ run_query("USE DATABASE " ~ artifacts_database) }}"
-  - "{{ run_query("USE SCHEMA " ~ artifacts_schema) }}"
-  - "{{ dbt_artifacts.upload_results(results) if (env_var('DBT_ARTIFACTS_DATABASE', 'not-set') != 'not-set' )}}"
+  - >
+    {% set artifacts_database = env_var('DBT_ARTIFACTS_DATABASE', '') %}
+    {% set artifacts_schema = env_var('DBT_ARTIFACTS_SCHEMA', '') %}
+
+    {{ run_query("USE DATABASE " ~ artifacts_database) }}
+    {{ run_query("USE SCHEMA " ~ artifacts_schema) }}
+    {{ dbt_artifacts.upload_results(results) }}
