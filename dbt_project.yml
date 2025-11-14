@@ -35,16 +35,4 @@ vars:
     artifacts_schema: "{{ env_var('DBT_ARTIFACTS_SCHEMA', '') }}"
 
 on-run-end:
-  - >
-    {% set cfg = var('cp_dbt_standard_package') %}
-    {% set art_db = cfg.get('artifacts_database') or env_var('DBT_ARTIFACTS_DATABASE', '') %}
-    {% set art_schema = cfg.get('artifacts_schema') or env_var('DBT_ARTIFACTS_SCHEMA', '') %}
-
-    {% if cfg.get('enable_artifact_upload', true) and art_db and art_schema %}
-        {{ log("cp_dbt_standard_package: uploading artifacts to " ~ art_db ~ "." ~ art_schema, info=true) }}
-        {{ run_query("USE DATABASE " ~ art_db) }}
-        {{ run_query("USE SCHEMA " ~ art_schema) }}
-        {{ dbt_artifacts.upload_results(results) }}
-    {% else %}
-        {{ log("cp_dbt_standard_package: skipping artifact upload (missing db/schema or disabled)", info=true) }}
-    {% endif %}
+  - "{{ dbt_artifacts.upload_results(results, database=env_var('DBT_ARTIFACTS_DATABASE'), schema=env_var('DBT_ARTIFACTS_SCHEMA')) if (env_var('DBT_ARTIFACTS_DATABASE', 'not-set') != 'not-set' )}}"
