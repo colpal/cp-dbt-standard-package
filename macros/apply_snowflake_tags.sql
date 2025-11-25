@@ -75,7 +75,6 @@
         {% endfor %}
     {% endif %}
 
-    {# ⭐ LOG ONCE — OUTSIDE THE LOOP ⭐ #}
     {{ log("Available Snowflake Tags:", info=true) }}
     {% for tag in tag_list %}
         {{ log(" - " ~ tag.tag_name ~ " (allowed: " ~ tag.allowed_values ~ ")", info=true) }}
