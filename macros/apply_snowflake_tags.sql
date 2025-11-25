@@ -30,6 +30,12 @@
 */
 
 -- set central tag schema
+{# ============================================================
+   Snowflake Tagging Package
+   Updated to log Snowflake tags ONCE only
+   ============================================================ #}
+
+-- set central tag schema
 {% macro get_tag_config() %}
     {% set config = {
         'tag_database': 'OPS_CUR',
@@ -54,14 +60,14 @@
 
     {% if execute %}
         {% for row in rows %}
-            {% set tag_name = row["name"] %}
-            {% set allowed_vals_str = row["allowed_values"] %}
-            
+            {% set tag_name = row["name"] | string %}
+            {% set allowed_vals_str = row["allowed_values"] | string if row["allowed_values"] is not none else "" %}
+
             {% set allowed_values = [] %}
-            {% if allowed_vals_str and allowed_vals_str.startswith("[") %}
-                {% set items = allowed_vals_str.strip("[]").split(",") %}
-                {% for item in items %}
-                    {% set clean = item | replace('"','') | trim %}
+            {% if allowed_vals_str.startswith("[") %}
+                {% set cleaned = allowed_vals_str.strip("[]") %}
+                {% for item in cleaned.split(",") %}
+                    {% set clean = item | replace('"', '') | trim %}
                     {% if clean %}
                         {% do allowed_values.append(clean) %}
                     {% endif %}
@@ -77,188 +83,153 @@
 
     {{ log("Available Snowflake Tags:", info=true) }}
     {% for tag in tag_list %}
-        {{ log(" - " ~ tag.tag_name ~ " (allowed: " ~ tag.allowed_values ~ ")", info=true) }}
+        {{ log(" - " ~ tag.tag_name ~ " (allowed values: " ~ tag.allowed_values ~ ")", info=true) }}
     {% endfor %}
 
     {{ return(tag_list) }}
-{% endmacro %}
-
-    {# Save into cache #}
-    {% set cache.loaded = true %}
-    {% set cache.list = tag_list %}
-    {% set cache.logged = true %}
-
-    {{ return(tag_list) }}
 
 {% endmacro %}
 
--- apply tag to a model with validation
+
+{# ============================================================
+   APPLY TAG TO MODEL
+   ============================================================ #}
 {% macro apply_tag(database_nm, schema, identifier, tag_name, tag_value, relation_type=none) %}
-    {# get available tags for validation #}
-    {% set config = cp_dbt_standard_package.get_tag_config() %}
+
     {% set available_tags = cp_dbt_standard_package.get_snowflake_tags() %}
+    {% set config = cp_dbt_standard_package.get_tag_config() %}
     
-    {# use namespace for variables that need to persist outside the loop #}
     {% set ns = namespace(tag_exists=false, matching_tag="", allowed_values=[]) %}
     
-    {# check if tag exists #}
+    {# Does the tag exist? #}
     {% for tag in available_tags %}
-        {% if tag.tag_name.strip() | upper == tag_name.strip() | upper %}
+        {% if tag.tag_name | upper == tag_name | upper %}
             {% set ns.tag_exists = true %}
             {% set ns.matching_tag = tag.tag_name %}
             {% set ns.allowed_values = tag.allowed_values %}
         {% endif %}
     {% endfor %}
-    
-    {# mismatch error #}
+
     {% if not ns.tag_exists %}
-        {{ log("ERROR: Tag '" ~ tag_name ~ "' doesn't exist in Snowflake. Tag will NOT be applied.", info=true) }}
+        {{ log("ERROR: Tag '" ~ tag_name ~ "' doesn't exist in Snowflake. Skipping.", info=true) }}
         {{ return() }}
     {% endif %}
-    
-    {# use the matched tag name for all further operations #}
+
     {% set tag_name = ns.matching_tag %}
-    
-    {# validate allowed values if specified #}
+
+    {# Validate allowed values #}
     {% if ns.allowed_values | length > 0 %}
         {% set val_ns = namespace(is_valid=false, matched_value="") %}
-        
+
         {% for allowed_value in ns.allowed_values %}
-            {% if allowed_value.strip() | upper == tag_value.strip() | upper %}
+            {% if allowed_value | upper == tag_value | upper %}
                 {% set val_ns.is_valid = true %}
                 {% set val_ns.matched_value = allowed_value %}
             {% endif %}
         {% endfor %}
-        
+
         {% if not val_ns.is_valid %}
-            {{ log("ERROR: Value '"
-                ~ tag_value ~
-                "' not in allowed values for tag '"
-                ~ tag_name ~
-                "'. Tag will NOT be applied.",
-                info=true) }}
+            {{ log("ERROR: Value '" ~ tag_value ~ "' not allowed for tag '" ~ tag_name ~ "'.", info=true) }}
             {{ log("Allowed values: " ~ ns.allowed_values | join(', '), info=true) }}
             {{ return() }}
         {% endif %}
-        
-        {# use the matched value #}
+
         {% set tag_value = val_ns.matched_value %}
     {% endif %}
 
-    {% set relation = adapter.get_relation(database, schema, identifier) %}
-    
-    {% if relation %}
-        {% set relation_type = relation.type | upper %}
-    {% else %}
-        {% set relation_type = 'TABLE' %}
-    {% endif %}
+    {# Identify relation type #}
+    {% set relation = adapter.get_relation(database_nm, schema, identifier) %}
+    {% set relation_type = relation.type | upper if relation else 'TABLE' %}
 
-    {# apply tag using fully qualified tag name #}
+    {# Apply tag #}
     {% set sql %}
-      ALTER {{ relation_type }} {{ database_nm }}.{{ schema }}.{{ identifier }} 
+      ALTER {{ relation_type }} {{ database_nm }}.{{ schema }}.{{ identifier }}
       SET TAG {{ config.tag_database }}.{{ config.tag_schema }}.{{ tag_name }} = '{{ tag_value }}'
     {% endset %}
 
     {% do run_query(sql) %}
     {{ log("Applied tag '" ~ tag_name ~ "' to " ~ schema ~ "." ~ identifier, info=true) }}
+
 {% endmacro %}
 
+
+{# ============================================================
+   APPLY COLUMN TAG
+   ============================================================ #}
 {% macro apply_column_tag(database_nm, schema, identifier, column_name, tag_name, tag_value, relation_type=none) %}
-    {# get available tags for validation #}
-    {% set config = cp_dbt_standard_package.get_tag_config() %}
+
     {% set available_tags = cp_dbt_standard_package.get_snowflake_tags() %}
+    {% set config = cp_dbt_standard_package.get_tag_config() %}
     
-    {# use namespace for variables that need to persist outside the loop #}
     {% set ns = namespace(tag_exists=false, matching_tag="", allowed_values=[]) %}
     
-    {# check if tag exists #}
     {% for tag in available_tags %}
-        {% if tag.tag_name.strip() | upper == tag_name.strip() | upper %}
+        {% if tag.tag_name | upper == tag_name | upper %}
             {% set ns.tag_exists = true %}
             {% set ns.matching_tag = tag.tag_name %}
             {% set ns.allowed_values = tag.allowed_values %}
         {% endif %}
     {% endfor %}
-    
-    {# mismatch error #}
+
     {% if not ns.tag_exists %}
-        {{ log("ERROR: Tag '"
-            ~ tag_name ~
-            "' doesn't exist in Snowflake. Column tag will NOT be applied.",
-            info=true) }}
+        {{ log("ERROR: Column tag '" ~ tag_name ~ "' doesn't exist in Snowflake. Skipping.", info=true) }}
         {{ return() }}
     {% endif %}
-    
-    {# use the matched tag name for all further operations #}
+
     {% set tag_name = ns.matching_tag %}
-    
+
     {% if ns.allowed_values | length > 0 %}
         {% set val_ns = namespace(is_valid=false, matched_value="") %}
-        
+
         {% for allowed_value in ns.allowed_values %}
-            {% if allowed_value.strip() | upper == tag_value.strip() | upper %}
+            {% if allowed_value | upper == tag_value | upper %}
                 {% set val_ns.is_valid = true %}
                 {% set val_ns.matched_value = allowed_value %}
             {% endif %}
         {% endfor %}
-        
+
         {% if not val_ns.is_valid %}
-            {{ log("ERROR: Value '"
-                ~ tag_value ~
-                "' not in allowed values for tag '"
-                ~ tag_name ~
-                "'. Column tag will NOT be applied.",
-                info=true) }}
+            {{ log("ERROR: Value '" ~ tag_value ~ "' not allowed for column tag '" ~ tag_name ~ "'.", info=true) }}
             {{ log("Allowed values: " ~ ns.allowed_values | join(', '), info=true) }}
             {{ return() }}
         {% endif %}
-        
-        {# use the matched value #}
+
         {% set tag_value = val_ns.matched_value %}
     {% endif %}
 
     {% set relation = adapter.get_relation(database_nm, schema, identifier) %}
-    {% if relation %}
-        {% set relation_type = relation.type | upper %}
-    {% else %}
-        {% set relation_type = 'TABLE' %}
-    {% endif %}
+    {% set relation_type = relation.type | upper if relation else 'TABLE' %}
 
-    {# apply tag using fully qualified tag name #}
     {% set sql %}
-      ALTER {{ relation_type }} {{ database_nm }}.{{ schema }}.{{ identifier }} 
+      ALTER {{ relation_type }} {{ database_nm }}.{{ schema }}.{{ identifier }}
       MODIFY COLUMN {{ column_name }}
       SET TAG {{ config.tag_database }}.{{ config.tag_schema }}.{{ tag_name }} = '{{ tag_value }}'
     {% endset %}
 
     {% do run_query(sql) %}
-    {{ log("Applied tag '"
-        ~ tag_name ~
-        "' to column "
-        ~ column_name ~
-        " in " ~ database_rm ~ "." ~ schema ~ "." ~ identifier,
-        info=true) }}
+    {{ log("Applied column tag '" ~ tag_name ~ "' to " ~ column_name ~ " in " ~ schema ~ "." ~ identifier, info=true) }}
+
 {% endmacro %}
 
--- process models and apply tags after run
+
+{# ============================================================
+   PROCESS TAGGING AT END OF RUN
+   ============================================================ #}
 {% macro tag_models_on_run_end(changed_models=None) %}
     {{ log("Starting tag application process", info=true) }}
 
-    {# Code to handle optional input (JSON from workflow) #}
     {% if changed_models is string %}
         {% set changed_models = fromjson(changed_models) %}
     {% endif %}
 
-    {# Choose models to process: only deployed ones if provided #}
     {% if not changed_models or changed_models | length == 0 %}
-        {{ log("No changed_models provided — skipping tagging models.", info=true) }}
+        {{ log("No changed_models provided — skipping tagging.", info=true) }}
         {% set models_to_tag = [] %}
     {% else %}
         {{ log("Applying tags to deployed models: " ~ changed_models, info=true) }}
         {% set models_to_tag = changed_models %}
     {% endif %}
 
-    {# Loop through each model in the model list #}
     {% for node_id in models_to_tag %}
         {% if node_id in graph.nodes %}
             {% set node = graph.nodes[node_id] %}
@@ -270,29 +241,24 @@
 
                 {{ log("Processing model: " ~ model_database ~ "." ~ model_schema ~ "." ~ model_name, info=true) }}
 
-                {# --- Table-level tags --- #}
+                {# Table-level tags #}
                 {% if node.config.snowflake_tags is defined %}
-                    {{ log("Applying table-level tags for " ~ model_name, info=true) }}
                     {% for tag_name, tag_value in node.config.snowflake_tags.items() %}
-                        {{ cp_dbt_standard_package.apply_tag(model_database, model_schema, model_name, tag_name, tag_value, 'TABLE') }}
+                        {{ cp_dbt_standard_package.apply_tag(model_database, model_schema, model_name, tag_name, tag_value) }}
                     {% endfor %}
                 {% endif %}
 
-                {# --- Column-level tags --- #}
-                {% if node.columns is defined %}
-                    {% for column_name, column in node.columns.items() %}
-                        {% if column.meta is defined and column.meta.snowflake_tags is defined %}
-                            {% for tag_name, tag_value in column.meta.snowflake_tags.items() %}
-                                {{ cp_dbt_standard_package.apply_column_tag(model_database, model_schema, model_name, column_name, tag_name, tag_value, 'TABLE') }}
-                            {% endfor %}
-                        {% endif %}
-                    {% endfor %}
-                {% endif %}
+                {# Column-level tags #}
+                {% for col_name, col in node.columns.items() %}
+                    {% if col.meta is defined and col.meta.snowflake_tags is defined %}
+                        {% for tag_name, tag_value in col.meta.snowflake_tags.items() %}
+                            {{ cp_dbt_standard_package.apply_column_tag(model_database, model_schema, model_name, col_name, tag_name, tag_value) }}
+                        {% endfor %}
+                    {% endif %}
+                {% endfor %}
             {% endif %}
-        {% else %}
-            {{ log("Skipping models not found in graph: " ~ node_id, info=true) }}
         {% endif %}
     {% endfor %}
 
-    {{ log("Tag application process completed successfully.", info=true) }}
+    {{ log("Tag application process completed.", info=true) }}
 {% endmacro %}
