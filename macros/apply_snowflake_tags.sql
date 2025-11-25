@@ -42,13 +42,22 @@
 {% macro get_snowflake_tags() %}
     {% set config = cp_dbt_standard_package.get_tag_config() %}
     
+    {% if not var('tags_logged', False) %}
+        {% set log_tags = True %}
+        {% do set_var('tags_logged', True) %}
+    {% else %}
+        {% set log_tags = False %}
+    {% endif %}
+
     {% set sql %}
     SHOW TAGS IN SCHEMA {{ config.tag_database }}.{{ config.tag_schema }}
     {% endset %}
     
-    {{ log("Retrieving available tags from: " ~ config.tag_database ~ "." ~ config.tag_schema, info=true) }}
-    {% set show_tags_query_output = run_query(sql) %}
+    {% if log_tags %}
+        {{ log("Retrieving available tags from: " ~ config.tag_database ~ "." ~ config.tag_schema, info=true) }}
+    {% endif %}
     
+    {% set show_tags_query_output = run_query(sql) %}
     {% set tag_list = [] %}
     
     {% if execute %}
@@ -60,17 +69,18 @@
             {% set allowed_values = [] %}
             {% if allowed_vals_str and allowed_vals_str.startswith("[") and allowed_vals_str.endswith("]") %}
                 {% set no_brackets = allowed_vals_str.strip("[]") %}
-                {% set raw_items = no_brackets.split(",") %}
-                {% for item in raw_items %}
-                    {% set clean_item = item | replace('"', "") | trim %}
-                    {% if clean_item != "" %}
+                {% for item in no_brackets.split(",") %}
+                    {% set clean_item = item | replace('"', '') | trim %}
+                    {% if clean_item %}
                         {% do allowed_values.append(clean_item) %}
                     {% endif %}
                 {% endfor %}
             {% endif %}
-            
+
             {% do tag_list.append({'tag_name': tag_name, 'allowed_values': allowed_values}) %}
-            {{ log("Found tag: " ~ tag_name ~ " with allowed values: " ~ allowed_values, info=true) }}
+            {% if log_tags %}
+                {{ log("Found tag: " ~ tag_name ~ " with allowed values: " ~ allowed_values, info=true) }}
+            {% endif %}
         {% endfor %}
     {% endif %}
     
