@@ -40,51 +40,62 @@
 
 -- retrieve all available Snowflake tags from central schema
 {% macro get_snowflake_tags() %}
-    {% set config = cp_dbt_standard_package.get_tag_config() %}
-    
-    {% if not var('tags_logged', False) %}
-        {% set log_tags = True %}
-        {% do set_var('tags_logged', True) %}
-    {% else %}
-        {% set log_tags = False %}
+
+    {% if not hasattr(this, 'tag_cache') %}
+        {% do setattr(this, 'tag_cache', namespace(loaded=false, list=[], logged=false)) %}
     {% endif %}
 
-    {% set sql %}
-    SHOW TAGS IN SCHEMA {{ config.tag_database }}.{{ config.tag_schema }}
-    {% endset %}
-    
-    {% if log_tags %}
-        {{ log("Retrieving available tags from: " ~ config.tag_database ~ "." ~ config.tag_schema, info=true) }}
+    {% set cache = getattr(this, 'tag_cache') %}
+
+    {% if cache.loaded %}
+        {% if not cache.logged %}
+            {# log them once #}
+            {% for tag in cache.list %}
+                {{ log("Found tag: " ~ tag.tag_name ~ " with allowed values: " ~ tag.allowed_values, info=true) }}
+            {% endfor %}
+            {% set cache.logged = true %}
+        {% endif %}
+        {{ return(cache.list) }}
     {% endif %}
-    
-    {% set show_tags_query_output = run_query(sql) %}
+
+    {% set config = cp_dbt_standard_package.get_tag_config() %}
+    {% set sql %}
+        SHOW TAGS IN SCHEMA {{ config.tag_database }}.{{ config.tag_schema }}
+    {% endset %}
+
+    {{ log("Retrieving available tags from: " ~ config.tag_database ~ "." ~ config.tag_schema, info=true) }}
+    {% set rows = run_query(sql) %}
+
     {% set tag_list = [] %}
-    
+
     {% if execute %}
-        {% for row in show_tags_query_output %}
+        {% for row in rows %}
             {% set tag_name = row["name"]|string %}
             {% set allowed_vals_str = row["allowed_values"]|string if row["allowed_values"] is not none else "" %}
             
-            {# process allowed values #}
             {% set allowed_values = [] %}
-            {% if allowed_vals_str and allowed_vals_str.startswith("[") and allowed_vals_str.endswith("]") %}
-                {% set no_brackets = allowed_vals_str.strip("[]") %}
-                {% for item in no_brackets.split(",") %}
-                    {% set clean_item = item | replace('"', '') | trim %}
-                    {% if clean_item %}
-                        {% do allowed_values.append(clean_item) %}
+            {% if allowed_vals_str.startswith("[") %}
+                {% set items = allowed_vals_str | replace("[","") | replace("]","") | split(",") %}
+                {% for item in items %}
+                    {% set val = item | replace('"',"") | trim %}
+                    {% if val != "" %}
+                        {% do allowed_values.append(val) %}
                     {% endif %}
                 {% endfor %}
             {% endif %}
 
             {% do tag_list.append({'tag_name': tag_name, 'allowed_values': allowed_values}) %}
-            {% if log_tags %}
-                {{ log("Found tag: " ~ tag_name ~ " with allowed values: " ~ allowed_values, info=true) }}
-            {% endif %}
+            {{ log("Found tag: " ~ tag_name ~ " with allowed values: " ~ allowed_values, info=true) }}
         {% endfor %}
     {% endif %}
-    
+
+    {# Save into cache #}
+    {% set cache.loaded = true %}
+    {% set cache.list = tag_list %}
+    {% set cache.logged = true %}
+
     {{ return(tag_list) }}
+
 {% endmacro %}
 
 -- apply tag to a model with validation
