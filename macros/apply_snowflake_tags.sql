@@ -41,53 +41,48 @@
 -- retrieve all available Snowflake tags from central schema
 {% macro get_snowflake_tags() %}
 
-    {% if not hasattr(this, 'tag_cache') %}
-        {% do setattr(this, 'tag_cache', namespace(loaded=false, list=[], logged=false)) %}
-    {% endif %}
-
-    {% set cache = getattr(this, 'tag_cache') %}
-
-    {% if cache.loaded %}
-        {% if not cache.logged %}
-            {# log them once #}
-            {% for tag in cache.list %}
-                {{ log("Found tag: " ~ tag.tag_name ~ " with allowed values: " ~ tag.allowed_values, info=true) }}
-            {% endfor %}
-            {% set cache.logged = true %}
-        {% endif %}
-        {{ return(cache.list) }}
-    {% endif %}
-
     {% set config = cp_dbt_standard_package.get_tag_config() %}
+
     {% set sql %}
         SHOW TAGS IN SCHEMA {{ config.tag_database }}.{{ config.tag_schema }}
     {% endset %}
 
     {{ log("Retrieving available tags from: " ~ config.tag_database ~ "." ~ config.tag_schema, info=true) }}
-    {% set rows = run_query(sql) %}
 
+    {% set rows = run_query(sql) %}
     {% set tag_list = [] %}
 
     {% if execute %}
         {% for row in rows %}
-            {% set tag_name = row["name"]|string %}
-            {% set allowed_vals_str = row["allowed_values"]|string if row["allowed_values"] is not none else "" %}
+            {% set tag_name = row["name"] %}
+            {% set allowed_vals_str = row["allowed_values"] %}
             
             {% set allowed_values = [] %}
-            {% if allowed_vals_str.startswith("[") %}
-                {% set items = allowed_vals_str | replace("[","") | replace("]","") | split(",") %}
+            {% if allowed_vals_str and allowed_vals_str.startswith("[") %}
+                {% set items = allowed_vals_str.strip("[]").split(",") %}
                 {% for item in items %}
-                    {% set val = item | replace('"',"") | trim %}
-                    {% if val != "" %}
-                        {% do allowed_values.append(val) %}
+                    {% set clean = item | replace('"','') | trim %}
+                    {% if clean %}
+                        {% do allowed_values.append(clean) %}
                     {% endif %}
                 {% endfor %}
             {% endif %}
 
-            {% do tag_list.append({'tag_name': tag_name, 'allowed_values': allowed_values}) %}
-            {{ log("Found tag: " ~ tag_name ~ " with allowed values: " ~ allowed_values, info=true) }}
+            {% do tag_list.append({
+                'tag_name': tag_name,
+                'allowed_values': allowed_values
+            }) %}
         {% endfor %}
     {% endif %}
+
+    {# ⭐ LOG ONCE — OUTSIDE THE LOOP ⭐ #}
+    {{ log("Available Snowflake Tags:", info=true) }}
+    {% for tag in tag_list %}
+        {{ log(" - " ~ tag.tag_name ~ " (allowed: " ~ tag.allowed_values ~ ")", info=true) }}
+    {% endfor %}
+
+    {{ return(tag_list) }}
+{% endmacro %}
 
     {# Save into cache #}
     {% set cache.loaded = true %}
