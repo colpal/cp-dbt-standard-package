@@ -35,6 +35,8 @@
    Updated to log Snowflake tags ONCE only
    ============================================================ #}
 
+
+
 -- set central tag schema
 {% macro get_tag_config() %}
     {% set config = {
@@ -45,15 +47,13 @@
 {% endmacro %}
 
 -- retrieve all available Snowflake tags from central schema
-{% macro get_snowflake_tags() %}
+{% macro get_snowflake_tags(show_log=false) %}
 
     {% set config = cp_dbt_standard_package.get_tag_config() %}
 
     {% set sql %}
         SHOW TAGS IN SCHEMA {{ config.tag_database }}.{{ config.tag_schema }}
     {% endset %}
-
-    {{ log("Retrieving available tags from: " ~ config.tag_database ~ "." ~ config.tag_schema, info=true) }}
 
     {% set rows = run_query(sql) %}
     {% set tag_list = [] %}
@@ -81,10 +81,12 @@
         {% endfor %}
     {% endif %}
 
-    {{ log("Available Snowflake Tags:", info=true) }}
-    {% for tag in tag_list %}
-        {{ log(" - " ~ tag.tag_name ~ " (allowed values: " ~ tag.allowed_values ~ ")", info=true) }}
-    {% endfor %}
+    {% if show_log %}
+        {{ log("Available Snowflake Tags:", info=true) }}
+        {% for tag in tag_list %}
+            {{ log(" - " ~ tag.tag_name ~ " (allowed values: " ~ tag.allowed_values ~ ")", info=true) }}
+        {% endfor %}
+    {% endif %}
 
     {{ return(tag_list) }}
 
@@ -96,7 +98,7 @@
    ============================================================ #}
 {% macro apply_tag(database_nm, schema, identifier, tag_name, tag_value, relation_type=none) %}
 
-    {% set available_tags = cp_dbt_standard_package.get_snowflake_tags() %}
+    {% set available_tags = cp_dbt_standard_package.get_snowflake_tags(show_log=false) %}
     {% set config = cp_dbt_standard_package.get_tag_config() %}
     
     {% set ns = namespace(tag_exists=false, matching_tag="", allowed_values=[]) %}
@@ -158,7 +160,7 @@
    ============================================================ #}
 {% macro apply_column_tag(database_nm, schema, identifier, column_name, tag_name, tag_value, relation_type=none) %}
 
-    {% set available_tags = cp_dbt_standard_package.get_snowflake_tags() %}
+    {% set available_tags = cp_dbt_standard_package.get_snowflake_tags(show_log=false) %}
     {% set config = cp_dbt_standard_package.get_tag_config() %}
     
     {% set ns = namespace(tag_exists=false, matching_tag="", allowed_values=[]) %}
