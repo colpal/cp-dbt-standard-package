@@ -56,7 +56,7 @@
     {% endset %}
 
     {% if not execute %}
-      {{ return([]) })
+      {{ return([]) }}
     {% endif %}
   
     {% set rows = run_query(sql) %}
