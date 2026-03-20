@@ -1,5 +1,5 @@
 {% macro set_query_tag(extra = {}) -%}
-  
+  {% do run_query('use warehouse CP_DBT_XSMALL_WH') %}
   {% set airflow_run = env_var('AIRFLOW_RUN', 'false') %}
   {% set sf_env = env_var('SF_ENV', '') %}
   {% set merged_extra = extra.copy() %}
