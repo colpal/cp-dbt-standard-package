@@ -10,14 +10,13 @@
       'model': model.name, 
       'is_airflow_run': airflow_run
   }) %}
+  {# Temporarily scale down to XSMALL just for the lookup query to save costs #}
+  {% do run_query('use warehouse CP_DBT_XSMALL_WH') %}
   {% set result = adapter.dispatch('set_query_tag', 'dbt_query_tags')(extra=merged_extra) %}
 
 
   {# 2. Dynamic Warehouse Logic (Conditional Feature Toggle) #}
   {% if var('enable_dynamic_warehouse', false) %}
-      
-      {# Temporarily scale down to XSMALL just for the lookup query to save costs #}
-      {% do run_query('use warehouse CP_DBT_XSMALL_WH') %}
 
       {# Safely and explicitly determine the database #}
       {% if sf_env == 'DEV' %}
