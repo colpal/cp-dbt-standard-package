@@ -1,13 +1,17 @@
 {% macro set_query_tag(extra = {}) -%}
+  
   {% do run_query('use warehouse CP_DBT_XSMALL_WH') %}
+  
   {% set airflow_run = env_var('AIRFLOW_RUN', 'false') %}
   {% set sf_env = env_var('SF_ENV', '') %}
+  
   {% set merged_extra = extra.copy() %}
       {% do merged_extra.update({
           'invocation_id': invocation_id, 
           'model': model.name, 
           'is_airflow_run': airflow_run
       }) %}
+  
   {% set result = adapter.dispatch('set_query_tag', 'dbt_query_tags')(extra=merged_extra) %}
 
   {# Dynamic Warehouse Logic (Conditional Feature Toggle) #}
