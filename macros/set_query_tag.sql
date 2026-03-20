@@ -42,7 +42,7 @@
       ) %}
       
       {% set selected_wh = wh_list[0] if wh_list else 'CP_DBT_LARGE_WH' %}
-      {% do run_query("USE WAREHOUSE " ~ selected_wh) %}
+      {% do run_query("USE WAREHOUSE " ~ selected_wh.upper() ~ '"')
   {% endif %}
 
 {% endmacro %}
