@@ -1,22 +1,24 @@
 {% macro set_query_tag(extra = {}) -%}
   
-  {% do run_query('use warehouse CP_DBT_XSMALL_WH') %}
-  
   {% set airflow_run = env_var('AIRFLOW_RUN', 'false') %}
   {% set sf_env = env_var('SF_ENV', '') %}
   
+  {# 1. Global Tagging (Executes for Everyone) #}
   {% set merged_extra = extra.copy() %}
-      {% do merged_extra.update({
-          'invocation_id': invocation_id, 
-          'model': model.name, 
-          'is_airflow_run': airflow_run
-      }) %}
-  
+  {% do merged_extra.update({
+      'invocation_id': invocation_id, 
+      'model': model.name, 
+      'is_airflow_run': airflow_run
+  }) %}
   {% set result = adapter.dispatch('set_query_tag', 'dbt_query_tags')(extra=merged_extra) %}
 
-  {# Dynamic Warehouse Logic (Conditional Feature Toggle) #}
+
+  {# 2. Dynamic Warehouse Logic (Conditional Feature Toggle) #}
   {% if var('enable_dynamic_warehouse', false) %}
       
+      {# Temporarily scale down to XSMALL just for the lookup query to save costs #}
+      {% do run_query('use warehouse CP_DBT_XSMALL_WH') %}
+
       {# Safely and explicitly determine the database #}
       {% if sf_env == 'DEV' %}
           {% set db = 'DEV_SF_ANALYTICS_HUB' %}
@@ -45,8 +47,10 @@
           where=where_stmt
       ) %}
       
+      {# Route the model to the recommended warehouse #}
       {% set selected_wh = wh_list[0] if wh_list else 'CP_DBT_LARGE_WH' %}
-      {% do run_query("USE WAREHOUSE " ~ selected_wh.upper() ~ '"')
+      {% do run_query("USE WAREHOUSE " ~ selected_wh.upper()) %}
+      
   {% endif %}
 
-{% endmacro %}
+{%- endmacro %}
