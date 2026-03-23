@@ -1,7 +1,6 @@
 {% macro set_query_tag(extra = {}) -%}
   
   {% set airflow_run = env_var('AIRFLOW_RUN', 'false') %}
-  {% set sf_env = env_var('SF_ENV', '') %}
   
   {# 1. Global Tagging (Executes for Everyone) #}
   {% set merged_extra = extra.copy() %}
@@ -10,22 +9,29 @@
       'model': model.name, 
       'is_airflow_run': airflow_run
   }) %}
-  {# Temporarily scale down to XSMALL just for the lookup query to save costs #}
-  {% do run_query('use warehouse CP_DBT_XSMALL_WH') %}
   {% set result = adapter.dispatch('set_query_tag', 'dbt_query_tags')(extra=merged_extra) %}
 
 
   {# 2. Dynamic Warehouse Logic (Conditional Feature Toggle) #}
   {% if var('enable_dynamic_warehouse', false) %}
+      
+      {# Temporarily scale down to XSMALL just for the lookup query to save costs #}
+      {% do run_query('use warehouse CP_DBT_XSMALL_WH') %}
 
-      {# Safely and explicitly determine the database #}
-      {% if sf_env == 'DEV' %}
+      {# Fetch SF_DATABASE, uppercase it, and extract the first element before the underscore #}
+      {% set sf_database = env_var('SF_DATABASE', '').upper() %}
+      
+      {# Jinja split method returns a list, [0] gets the prefix #}
+      {% set env_prefix = sf_database.split('_')[0] if sf_database else '' %}
+
+      {# Safely determine the database using the prefix #}
+      {% if env_prefix == 'DEV' %}
           {% set db = 'DEV_SF_ANALYTICS_HUB' %}
-      {% elif sf_env == 'PROD' %}
+      {% elif env_prefix == 'PROD' %}
           {% set db = 'PROD_SF_ANALYTICS_HUB' %}
       {% else %}
-          {# Fail fast if the environment is unknown #}
-          {% do exceptions.raise_compiler_error("Invalid SF_ENV provided. Must be DEV or PROD. Got: " ~ sf_env) %}
+          {# Fail fast if the environment prefix is unknown #}
+          {% do exceptions.raise_compiler_error("Cannot determine environment from SF_DATABASE. Prefix must be DEV_ or PROD_. Got database name: " ~ sf_database) %}
       {% endif %}
       
       {# Create the relation for the recommendation table #}
