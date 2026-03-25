@@ -18,20 +18,17 @@
       {# Temporarily scale down to XSMALL just for the lookup query to save costs #}
       {% do run_query('use warehouse CP_DBT_XSMALL_WH') %}
 
-      {# Fetch SF_DATABASE, uppercase it, and extract the first element before the underscore #}
+      {# Fetch SF_DATABASE and uppercase it for safe substring matching #}
       {% set sf_database = env_var('SF_DATABASE', '').upper() %}
       
-      {# Jinja split method returns a list, [0] gets the prefix #}
-      {% set env_prefix = sf_database.split('_')[0] if sf_database else '' %}
-
-      {# Safely determine the database using the prefix #}
-      {% if env_prefix == 'DEV' %}
+      {# Safely determine the database using substring matching #}
+      {% if 'DEV' in sf_database %}
           {% set db = 'DEV_SF_ANALYTICS_HUB' %}
-      {% elif env_prefix == 'PROD' %}
+      {% elif 'PROD' in sf_database %}
           {% set db = 'PROD_SF_ANALYTICS_HUB' %}
       {% else %}
           {# Fail fast if the environment prefix is unknown #}
-          {% do exceptions.raise_compiler_error("Cannot determine environment from SF_DATABASE. Prefix must be DEV_ or PROD_. Got database name: " ~ sf_database) %}
+          {% do exceptions.raise_compiler_error("Cannot determine environment from SF_DATABASE. Must contain 'DEV' or 'PROD'. Got database name: " ~ sf_database) %}
       {% endif %}
       
       {# Create the relation for the recommendation table #}
