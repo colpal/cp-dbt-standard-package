@@ -22,9 +22,9 @@
       {% set sf_database = env_var('SF_DATABASE', '').upper() %}
       
       {# Safely determine the database using substring matching #}
-      {% if 'DEV' in sf_database %}
+      {% if 'DEV_' in sf_database %}
           {% set db = 'DEV_SF_ANALYTICS_HUB' %}
-      {% elif 'PROD' in sf_database %}
+      {% elif 'PROD_' in sf_database %}
           {% set db = 'PROD_SF_ANALYTICS_HUB' %}
       {% else %}
           {# Fail fast if the environment prefix is unknown #}
