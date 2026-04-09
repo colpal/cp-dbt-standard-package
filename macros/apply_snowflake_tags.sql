@@ -95,6 +95,7 @@
 
 {# ============================================================
    APPLY TAG TO MODEL
+   Supports: .strip() whitespace handling, optional relation_type (skip DB query)
    ============================================================ #}
 {% macro apply_tag(database_nm, schema, identifier, tag_name, tag_value, relation_type=none) %}
 
@@ -105,7 +106,7 @@
     
     {# Does the tag exist? #}
     {% for tag in available_tags %}
-        {% if tag.tag_name | upper == tag_name | upper %}
+        {% if tag.tag_name.strip() | upper == tag_name.strip() | upper %}
             {% set ns.tag_exists = true %}
             {% set ns.matching_tag = tag.tag_name %}
             {% set ns.allowed_values = tag.allowed_values %}
@@ -124,7 +125,7 @@
         {% set val_ns = namespace(is_valid=false, matched_value="") %}
 
         {% for allowed_value in ns.allowed_values %}
-            {% if allowed_value | upper == tag_value | upper %}
+            {% if allowed_value.strip() | upper == tag_value.strip() | upper %}
                 {% set val_ns.is_valid = true %}
                 {% set val_ns.matched_value = allowed_value %}
             {% endif %}
@@ -139,9 +140,11 @@
         {% set tag_value = val_ns.matched_value %}
     {% endif %}
 
-    {# Identify relation type #}
-    {% set relation = adapter.get_relation(database_nm, schema, identifier) %}
-    {% set relation_type = relation.type | upper if relation else 'TABLE' %}
+    {# Identify relation type (use passed value if available, otherwise query) #}
+    {% if not relation_type %}
+        {% set relation = adapter.get_relation(database_nm, schema, identifier) %}
+        {% set relation_type = relation.type | upper if relation else 'TABLE' %}
+    {% endif %}
 
     {# Apply tag #}
     {% set sql %}
@@ -157,6 +160,7 @@
 
 {# ============================================================
    APPLY COLUMN TAG
+   Supports: .strip() whitespace handling, optional relation_type (skip DB query)
    ============================================================ #}
 {% macro apply_column_tag(database_nm, schema, identifier, column_name, tag_name, tag_value, relation_type=none) %}
 
@@ -166,7 +170,7 @@
     {% set ns = namespace(tag_exists=false, matching_tag="", allowed_values=[]) %}
     
     {% for tag in available_tags %}
-        {% if tag.tag_name | upper == tag_name | upper %}
+        {% if tag.tag_name.strip() | upper == tag_name.strip() | upper %}
             {% set ns.tag_exists = true %}
             {% set ns.matching_tag = tag.tag_name %}
             {% set ns.allowed_values = tag.allowed_values %}
@@ -184,7 +188,7 @@
         {% set val_ns = namespace(is_valid=false, matched_value="") %}
 
         {% for allowed_value in ns.allowed_values %}
-            {% if allowed_value | upper == tag_value | upper %}
+            {% if allowed_value.strip() | upper == tag_value.strip() | upper %}
                 {% set val_ns.is_valid = true %}
                 {% set val_ns.matched_value = allowed_value %}
             {% endif %}
@@ -199,8 +203,11 @@
         {% set tag_value = val_ns.matched_value %}
     {% endif %}
 
-    {% set relation = adapter.get_relation(database_nm, schema, identifier) %}
-    {% set relation_type = relation.type | upper if relation else 'TABLE' %}
+    {# Use passed relation_type if available, otherwise query #}
+    {% if not relation_type %}
+        {% set relation = adapter.get_relation(database_nm, schema, identifier) %}
+        {% set relation_type = relation.type | upper if relation else 'TABLE' %}
+    {% endif %}
 
     {% set sql %}
       ALTER {{ relation_type }} {{ database_nm }}.{{ schema }}.{{ identifier }}
@@ -216,6 +223,7 @@
 
 {# ============================================================
    PROCESS TAGGING AT END OF RUN
+   Supports: alias, materialization-based relation type, dual tag location (config/meta)
    ============================================================ #}
 {% macro tag_models_on_run_end(changed_models=None) %}
     {{ log("Starting tag application process", info=true) }}
@@ -239,14 +247,25 @@
             {% if node.resource_type == 'model' %}
                 {% set model_database = node.database %}
                 {% set model_schema = node.schema %}
-                {% set model_name = node.name %}
+                {% set model_name = node.alias | default(node.name) %}
+
+                {# Determine relation type from materialization config #}
+                {% set mat = node.config.materialized %}
+                {% set rel_type = 'VIEW' if mat == 'view' else 'TABLE' %}
 
                 {{ log("Processing model: " ~ model_database ~ "." ~ model_schema ~ "." ~ model_name, info=true) }}
 
-                {# Table-level tags #}
-                {% if node.config.snowflake_tags is defined %}
-                    {% for tag_name, tag_value in node.config.snowflake_tags.items() %}
-                        {{ cp_dbt_standard_package.apply_tag(model_database, model_schema, model_name, tag_name, tag_value) }}
+                {# Table-level tags — check both config.snowflake_tags and config.meta.snowflake_tags #}
+                {% set model_tags = node.config.get('snowflake_tags', {}) %}
+                {% set meta_tags = node.config.get('meta', {}).get('snowflake_tags', {}) %}
+
+                {% if meta_tags %}
+                    {% for tag_name, tag_value in meta_tags.items() %}
+                        {{ cp_dbt_standard_package.apply_tag(model_database, model_schema, model_name, tag_name, tag_value, rel_type) }}
+                    {% endfor %}
+                {% elif model_tags %}
+                    {% for tag_name, tag_value in model_tags.items() %}
+                        {{ cp_dbt_standard_package.apply_tag(model_database, model_schema, model_name, tag_name, tag_value, rel_type) }}
                     {% endfor %}
                 {% endif %}
 
@@ -254,7 +273,7 @@
                 {% for col_name, col in node.columns.items() %}
                     {% if col.meta is defined and col.meta.snowflake_tags is defined %}
                         {% for tag_name, tag_value in col.meta.snowflake_tags.items() %}
-                            {{ cp_dbt_standard_package.apply_column_tag(model_database, model_schema, model_name, col_name, tag_name, tag_value) }}
+                            {{ cp_dbt_standard_package.apply_column_tag(model_database, model_schema, model_name, col_name, tag_name, tag_value, rel_type) }}
                         {% endfor %}
                     {% endif %}
                 {% endfor %}
@@ -263,4 +282,27 @@
     {% endfor %}
 
     {{ log("Tag application process completed.", info=true) }}
+{% endmacro %}
+
+
+{# ============================================================
+   AUTO-TAG FROM RUN RESULTS (on-run-end)
+   Called automatically by on-run-end hook to reapply tags after dbt runs
+   ============================================================ #}
+{% macro tag_models_from_results() %}
+    {% if execute %}
+        {% set successful_models = [] %}
+        {% for res in results %}
+            {% if res.node.resource_type == 'model' and res.status in ['success', 'pass'] %}
+                {% do successful_models.append(res.node.unique_id) %}
+            {% endif %}
+        {% endfor %}
+
+        {% if successful_models | length > 0 %}
+            {{ log("Auto-tagging " ~ successful_models | length ~ " deployed model(s)", info=true) }}
+            {{ cp_dbt_standard_package.tag_models_on_run_end(successful_models) }}
+        {% else %}
+            {{ log("No successfully deployed models to tag.", info=true) }}
+        {% endif %}
+    {% endif %}
 {% endmacro %}

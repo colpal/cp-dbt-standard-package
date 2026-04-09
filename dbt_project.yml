@@ -27,3 +27,6 @@ clean-targets:         # directories to be removed by `dbt clean`
 models:
   +transient: false
 
+# Automatically reapply Snowflake tags after every dbt run (fixes tag loss on view recreation)
+on-run-end:
+  - "{{ cp_dbt_standard_package.tag_models_from_results() }}"
