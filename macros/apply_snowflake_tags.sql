@@ -306,3 +306,15 @@
         {% endif %}
     {% endif %}
 {% endmacro %}
+
+
+{# ============================================================
+   CALL CERTIFIED READ PROCEDURE (on-run-end)
+   Calls the Snowflake stored procedure to apply certified read grants after dbt runs
+   ============================================================ #}
+{% macro call_certified_read_proc() %}
+    {% if execute %}
+        {{ log("Calling GRANT_CERTIFIED_READ_ACCESS procedure to apply certified read grants", info=true) }}
+        {% do run_query("CALL OPS_CUR.UTIL_COMMON.GRANT_CERTIFIED_READ_ACCESS()") %}
+    {% endif %}
+{% endmacro %}
