@@ -26,15 +26,19 @@
   {%- set cur_role = env_var('DBT_SF_CUR_DEPLOY_ROLE') -%}
   {%- set con_role = env_var('DBT_SF_CON_DEPLOY_ROLE', cur_role) -%}
   {%- set target_role = con_role if '_CON' in (relation.database | upper) else cur_role -%}
+  {%- set schema_fqn = relation.without_identifier() -%}
 
+  {{ log("[create_schema] Switching to role " ~ target_role ~ " to create schema " ~ schema_fqn, info=true) }}
   {% call statement('use_role_for_schema') %}
     USE ROLE {{ target_role }}
   {% endcall %}
 
+  {{ log("[create_schema] Creating schema " ~ schema_fqn, info=true) }}
   {% call statement('create_schema') %}
-    CREATE SCHEMA IF NOT EXISTS {{ relation.without_identifier() }}
+    CREATE SCHEMA IF NOT EXISTS {{ schema_fqn }}
   {% endcall %}
 
+  {{ log("[create_schema] Restoring session role " ~ cur_role, info=true) }}
   {% call statement('restore_session_role') %}
     USE ROLE {{ cur_role }}
   {% endcall %}
