@@ -22,6 +22,7 @@
           case 
             when table_type = 'BASE TABLE' then 'TABLE'
             when table_type = 'VIEW' then 'VIEW'
+            when table_type = 'ICEBERG TABLE' then 'TABLE'
           end as relation_type,
           concat_ws('.', table_catalog, table_schema, table_name) as relation_name
         from 
@@ -51,6 +52,7 @@
           case 
             when table_type = 'BASE TABLE' then 'TABLE'
             when table_type = 'VIEW' then 'VIEW'
+            when table_type = 'ICEBERG TABLE' then 'TABLE'
           end as relation_type, 
           concat_ws('.', table_catalog, table_schema, table_name) as relation_name
         from 
