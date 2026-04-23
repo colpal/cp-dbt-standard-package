@@ -322,12 +322,24 @@
    Domain segregation is enforced: one CALL per target database,
    so FIN_CON models cannot trigger grants on MD_CON, etc.
 
+   Guard: only fires when the Snowflake session role contains 'DEPLOY'
+   (e.g. EX_DEPLOY_CUR, FIN_DEPLOY_CON). This prevents the procedure
+   from being called during local developer or analyst runs.
+
    The legacy 0-arg GRANT_CERTIFIED_READ_ACCESS() procedure continues
    to run on its hourly Snowflake Task, acting as a safety net for
    objects tagged directly in Snowflake (outside of dbt runs).
    ============================================================ #}
 {% macro call_certified_read_proc() %}
     {% if execute %}
+
+        {# --------------------------------------------------------
+           Role guard: only DEPLOY roles should manage certified grants.
+           target.role reflects the actual Snowflake session role dbt
+           connected with (set via profiles.yml → role: ...).
+           -------------------------------------------------------- #}
+        {% if 'DEPLOY' in (target.role | upper) %}
+
         {# --------------------------------------------------------
            Step 1: Walk the full graph and collect every certified
            model, grouped by its resolved target database.
@@ -397,7 +409,8 @@
                 {{ log(
                     "[cert_grants] Calling GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN"
                     ~ " for " ~ domain_db
-                    ~ " — " ~ objects | length ~ " certified object(s)",
+                    ~ " — " ~ objects | length ~ " certified object(s)"
+                    ~ " (role: " ~ target.role ~ ")",
                     info=true
                 ) }}
                 {% set call_sql %}
@@ -411,6 +424,13 @@
         {% else %}
             {{ log(
                 "[cert_grants] No certified models found in graph — skipping GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN.",
+                info=true
+            ) }}
+        {% endif %}
+
+        {% else %}
+            {{ log(
+                "[cert_grants] Skipping — session role '" ~ target.role ~ "' is not a DEPLOY role.",
                 info=true
             ) }}
         {% endif %}
