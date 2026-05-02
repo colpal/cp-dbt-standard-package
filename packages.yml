@@ -1,5 +1,7 @@
 packages:
   - package: dbt-labs/dbt_project_evaluator
-    version: 1.0.0
+    version: 1.2.4            # upgraded from 1.0.0 — latest as of 2026-05-02
   - package: get-select/dbt_query_tags
-    version: [">=3.0.0", "<4.0.0"]
+    version: 3.1.0            # pinned from [">=3.0.0", "<4.0.0"] — latest as of 2026-05-02
+  - package: Snowflake-Labs/dbt_semantic_view
+    version: 1.0.3            # new — semantic_view materialization for Snowflake SVs
