@@ -8,6 +8,14 @@
     {% do current_models.append(node.name) %} 
     {% do models_type.append(node.name ~ "." ~ node.config.materialized) %} 
   {% endfor %}
+
+  -- Collect expected Semantic View names (dbt_model / semantic_view materialization)
+  {% set current_sv_names = [] %}
+  {% for node in graph.nodes.values()
+     | selectattr("resource_type", "equalto", "model")
+     | selectattr("config.materialized", "equalto", "semantic_view") %}
+    {% do current_sv_names.append(node.name | upper) %}
+  {% endfor %}
 {% endif %}
 
 {% set current_models_type=[] %}
@@ -112,4 +120,40 @@
   {% do log('No objects to clean.', True) %}
 {% endif %}
 
+-- ── Semantic View cleanup ──────────────────────────────────────────────────
+-- Safety guard: only run if graph.nodes contains semantic_view nodes.
+-- If the project has no SV models, current_sv_names is empty and we skip
+-- entirely to prevent mass drops in repos not yet using SVs.
+{% if execute and current_sv_names | length > 0 %}
+  {% do log("SEMANTIC VIEW CLEANUP: expected SVs: " ~ current_sv_names | join(', '), True) %}
+
+  -- Step 1: discover what SVs currently exist in the target database
+  {% do run_query("SHOW SEMANTIC VIEWS IN DATABASE " ~ target.database) %}
+  {% set existing_sv_results = run_query(
+      "SELECT \"name\", \"schema_name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))"
+      " WHERE \"schema_name\" != 'INFORMATION_SCHEMA'"
+  ) %}
+
+  {% if existing_sv_results and existing_sv_results.rows | length > 0 %}
+    {% for row in existing_sv_results.rows %}
+      {% set sv_name   = row[0] | upper %}
+      {% set sv_schema = row[1] | upper %}
+      {% if sv_name not in current_sv_names %}
+        {% set drop_sv_cmd = "DROP SEMANTIC VIEW IF EXISTS "
+            ~ target.database ~ "." ~ sv_schema ~ "." ~ sv_name ~ ";" %}
+        {% do log("SV orphan detected — queuing: " ~ drop_sv_cmd, True) %}
+        {% if dry_run == 'false' %}
+          {% do run_query(drop_sv_cmd) %}
+        {% endif %}
+      {% endif %}
+    {% endfor %}
+  {% else %}
+    {% do log('No semantic views found in ' ~ target.database ~ ' — nothing to clean.', True) %}
+  {% endif %}
+
+{% elif execute %}
+  {% do log("SEMANTIC VIEW CLEANUP: no semantic_view nodes in graph — skipping SV cleanup.", True) %}
+{% endif %}
+
 {%- endmacro -%}
+
