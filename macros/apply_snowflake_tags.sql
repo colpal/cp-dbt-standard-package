@@ -310,11 +310,130 @@
 
 {# ============================================================
    CALL CERTIFIED READ PROCEDURE (on-run-end)
-   Calls the Snowflake stored procedure to apply certified read grants after dbt runs
+
+   Zero-latency, domain-scoped alternative to the hourly
+   TAG_BASED_RBAC_CERT_PROC task.
+
+   Instead of querying SNOWFLAKE.ACCOUNT_USAGE (latency up to 2h),
+   this macro reads the dbt graph at runtime to build a complete
+   manifest of certified objects, then passes it directly to the
+   stored procedure as a JSON string.
+
+   Domain segregation is enforced: one CALL per target database,
+   so FIN_CON models cannot trigger grants on MD_CON, etc.
+
+   Guard: only fires when the Snowflake session role contains 'DEPLOY'
+   (e.g. EX_DEPLOY_CUR, FIN_DEPLOY_CON). This prevents the procedure
+   from being called during local developer or analyst runs.
+
+   The legacy 0-arg GRANT_CERTIFIED_READ_ACCESS() procedure continues
+   to run on its hourly Snowflake Task, acting as a safety net for
+   objects tagged directly in Snowflake (outside of dbt runs).
    ============================================================ #}
 {% macro call_certified_read_proc() %}
     {% if execute %}
-        {{ log("Calling GRANT_CERTIFIED_READ_ACCESS procedure to apply certified read grants", info=true) }}
-        {% do run_query("CALL OPS_CUR.UTIL_COMMON.GRANT_CERTIFIED_READ_ACCESS()") %}
+
+        {# --------------------------------------------------------
+           Role guard: only DEPLOY roles should manage certified grants.
+           target.role reflects the actual Snowflake session role dbt
+           connected with (set via profiles.yml → role: ...).
+           -------------------------------------------------------- #}
+        {% if 'DEPLOY' in (target.role | upper) %}
+
+        {# --------------------------------------------------------
+           Step 1: Walk the full graph and collect every certified
+           model, grouped by its resolved target database.
+
+           We iterate ALL nodes (not just `results`) so the procedure
+           always receives the complete certified set — including models
+           that weren't re-run in this dbt invocation but still require
+           their grants to remain active.
+           -------------------------------------------------------- #}
+        {% set certified_by_db = {} %}
+
+        {% for node_id, node in graph.nodes.items() %}
+            {% if node.resource_type == 'model' %}
+
+                {# Resolve IS_CERTIFIED from either tag location:
+                   - config.snowflake_tags (set via dbt model config)
+                   - config.meta.snowflake_tags (set via meta block) #}
+                {% set model_tags  = node.config.get('snowflake_tags', {}) %}
+                {% set meta_tags   = node.config.get('meta', {}).get('snowflake_tags', {}) %}
+
+                {% set is_certified = false %}
+                {% if model_tags.get('IS_CERTIFIED', '') | upper == 'TRUE' %}
+                    {% set is_certified = true %}
+                {% elif meta_tags.get('IS_CERTIFIED', '') | upper == 'TRUE' %}
+                    {% set is_certified = true %}
+                {% endif %}
+
+                {% if is_certified %}
+                    {% set db  = node.database | upper %}
+                    {% set mat = node.config.materialized %}
+
+                    {# Map dbt materialization → Snowflake object type.
+                       incremental / table → TABLE; view → VIEW.
+                       ephemeral models produce no physical object — skip. #}
+                    {% if mat == 'ephemeral' %}
+                        {# nothing to grant — ephemeral models are inlined #}
+                    {% else %}
+                        {% set obj_type = 'VIEW' if mat == 'view' else 'TABLE' %}
+
+                        {# Skip CI preview / prototype databases.
+                           These are ephemeral and should never have prod grants. #}
+                        {% if '_PR_' not in db and not db.endswith('_PD') %}
+
+                            {% if db not in certified_by_db %}
+                                {% do certified_by_db.update({db: []}) %}
+                            {% endif %}
+
+                            {% do certified_by_db[db].append({
+                                'schema': node.schema | upper,
+                                'name':   (node.config.get('alias') or node.name) | upper,
+                                'type':   obj_type
+                            }) %}
+
+                        {% endif %}
+                    {% endif %}
+                {% endif %}
+            {% endif %}
+        {% endfor %}
+
+        {# --------------------------------------------------------
+           Step 2: Call GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN once
+           per domain database, passing the JSON manifest.
+           -------------------------------------------------------- #}
+        {% if certified_by_db | length > 0 %}
+            {% for domain_db, objects in certified_by_db.items() %}
+                {% set json_payload = tojson(objects) %}
+                {{ log(
+                    "[cert_grants] Calling GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN"
+                    ~ " for " ~ domain_db
+                    ~ " — " ~ objects | length ~ " certified object(s)"
+                    ~ " (role: " ~ target.role ~ ")",
+                    info=true
+                ) }}
+                {% set call_sql %}
+                    CALL OPS_CUR.UTIL_COMMON.GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN(
+                        '{{ domain_db }}',
+                        '{{ json_payload | replace("'", "\\'") }}'
+                    )
+                {% endset %}
+                {% do run_query(call_sql) %}
+            {% endfor %}
+        {% else %}
+            {{ log(
+                "[cert_grants] No certified models found in graph — skipping GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN.",
+                info=true
+            ) }}
+        {% endif %}
+
+        {% else %}
+            {{ log(
+                "[cert_grants] Skipping — session role '" ~ target.role ~ "' is not a DEPLOY role.",
+                info=true
+            ) }}
+        {% endif %}
+
     {% endif %}
 {% endmacro %}
