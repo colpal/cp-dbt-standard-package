@@ -192,27 +192,12 @@
   {% do log("PRINTING CLEANUP_QUERY LOG", True) %}
   {% for drop_command in drop_commands %}
     {% do log(drop_command, True) %}
-    {# Fix 4: Wrap each DROP in a Snowflake Scripting anonymous block.
-       The block always returns a string ('SUCCESS' or 'ERROR: ...') so dbt
-       never raises DbtRuntimeError on a failed drop — we log the error and
-       continue processing remaining orphans. #}
     {% if dry_run == 'false' %}
-      {% set wrapped_cmd %}
-EXECUTE IMMEDIATE $$
-BEGIN
-  {{ drop_command }}
-  RETURN 'SUCCESS';
-EXCEPTION
-  WHEN OTHER THEN
-    RETURN 'ERROR: ' || SQLERRM;
-END;
-$$
-      {% endset %}
-      {% set result = run_query(wrapped_cmd) %}
-      {% if result.rows | length > 0 and result.rows[0][0] is not none
-         and (result.rows[0][0] | string).startswith('ERROR') %}
-        {% do log("WARNING — drop failed (continuing): " ~ result.rows[0][0], True) %}
-      {% endif %}
+      {# Direct run_query — IF EXISTS handles the object-vanished race.
+         EXECUTE IMMEDIATE $$ BEGIN...END $$ removed: the BEGIN keyword in
+         {% set %} blocks triggers the dbt-snowflake 1.11.x adapter's
+         transaction scanner and causes 'cannot access local variable connection'. #}
+      {% do run_query(drop_command) %}
     {% endif %}
   {% endfor %}
 {% else %}
@@ -226,22 +211,7 @@ $$
   {% for drop_tabvw in drop_tab_vw %}
     {% do log(drop_tabvw, True) %}
     {% if dry_run == 'false' %}
-      {% set wrapped_tabvw %}
-EXECUTE IMMEDIATE $$
-BEGIN
-  {{ drop_tabvw }}
-  RETURN 'SUCCESS';
-EXCEPTION
-  WHEN OTHER THEN
-    RETURN 'ERROR: ' || SQLERRM;
-END;
-$$
-      {% endset %}
-      {% set result = run_query(wrapped_tabvw) %}
-      {% if result.rows | length > 0 and result.rows[0][0] is not none
-         and (result.rows[0][0] | string).startswith('ERROR') %}
-        {% do log("WARNING — drop failed (continuing): " ~ result.rows[0][0], True) %}
-      {% endif %}
+      {% do run_query(drop_tabvw) %}
     {% endif %}
   {% endfor %}
 {% else %}
@@ -278,23 +248,7 @@ $$
             ~ target.database ~ "." ~ sv_schema ~ "." ~ sv_name ~ ";" %}
         {% do log("SV orphan detected — queuing: " ~ drop_sv_cmd, True) %}
         {% if dry_run == 'false' %}
-          {# Fix 4: same Snowflake Scripting wrapper for SV drops. #}
-          {% set wrapped_sv %}
-EXECUTE IMMEDIATE $$
-BEGIN
-  {{ drop_sv_cmd }}
-  RETURN 'SUCCESS';
-EXCEPTION
-  WHEN OTHER THEN
-    RETURN 'ERROR: ' || SQLERRM;
-END;
-$$
-          {% endset %}
-          {% set result = run_query(wrapped_sv) %}
-          {% if result.rows | length > 0 and result.rows[0][0] is not none
-             and (result.rows[0][0] | string).startswith('ERROR') %}
-            {% do log("WARNING — SV drop failed (continuing): " ~ result.rows[0][0], True) %}
-          {% endif %}
+          {% do run_query(drop_sv_cmd) %}
         {% endif %}
       {% endif %}
     {% endfor %}
@@ -306,4 +260,5 @@ $$
   {% do log("SEMANTIC VIEW CLEANUP: no semantic_view nodes in graph — skipping SV cleanup.", True) %}
 {% endif %}
 
+select 1 -- drop_unneeded_objects completed
 {%- endmacro -%}
