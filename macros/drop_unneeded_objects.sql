@@ -230,10 +230,12 @@
   -- Step 1: discover what SVs currently exist in the target database.
   -- Snowflake semantic views are NOT in information_schema.tables — they have
   -- their own dedicated catalog view: information_schema.semantic_views.
+  -- Columns per docs.snowflake.com/en/sql-reference/info-schema/semantic_views:
+  --   catalog, schema, name, owner, created, comment
   {% set existing_sv_results = run_query(
-      "SELECT semantic_view_name AS name, semantic_view_schema AS schema_name"
+      "SELECT name, schema"
       " FROM " ~ target.database ~ ".information_schema.semantic_views"
-      " WHERE semantic_view_schema != 'INFORMATION_SCHEMA'"
+      " WHERE schema != 'INFORMATION_SCHEMA'"
   ) %}
 
   {% if existing_sv_results and existing_sv_results.rows | length > 0 %}
