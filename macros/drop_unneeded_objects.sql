@@ -258,12 +258,14 @@ $$
   {% do log("SEMANTIC VIEW CLEANUP: expected SV FQNs: " ~ current_sv_fqns | join(', '), True) %}
 
   -- Step 1: discover what SVs currently exist in the target database.
-  -- LAST_QUERY_ID() safety: on-run-end is single-threaded in dbt — no
-  -- concurrent queries can interleave between SHOW and RESULT_SCAN here.
-  {% do run_query("SHOW SEMANTIC VIEWS IN DATABASE " ~ target.database) %}
+  -- Uses INFORMATION_SCHEMA.TABLES (table_type = 'SEMANTIC VIEW') instead of
+  -- SHOW SEMANTIC VIEWS + RESULT_SCAN — the SHOW pattern is DDL-class and
+  -- causes 'cannot access local variable connection' in dbt-snowflake 1.11.x.
   {% set existing_sv_results = run_query(
-      "SELECT \"name\", \"schema_name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))"
-      " WHERE \"schema_name\" != 'INFORMATION_SCHEMA'"
+      "SELECT table_name AS name, table_schema AS schema_name"
+      " FROM " ~ target.database ~ ".information_schema.tables"
+      " WHERE table_type = 'SEMANTIC VIEW'"
+      " AND table_schema != 'INFORMATION_SCHEMA'"
   ) %}
 
   {% if existing_sv_results and existing_sv_results.rows | length > 0 %}
