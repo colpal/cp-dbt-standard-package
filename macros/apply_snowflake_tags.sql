@@ -341,6 +341,21 @@
         {% if 'DEPLOY' in (target.role | upper) %}
 
         {# --------------------------------------------------------
+           Environment guard: skip in PR / PD (pre-deploy) databases.
+           UTIL_DB.PUBLIC.GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN only
+           exists in prod, and the PR deploy role has no EXECUTE on it.
+           The hourly Snowflake task is the safety net for ephemeral runs.
+           -------------------------------------------------------- #}
+        {% set db_upper = target.database | upper %}
+        {% if '_PR_' in db_upper or db_upper.endswith('_PD') %}
+            {{ log(
+                "[cert_grants] Skipping — ephemeral environment detected (target.database: "
+                ~ target.database ~ "). UTIL_DB.PUBLIC proc not available in PR/PD.",
+                info=true
+            ) }}
+        {% else %}
+
+        {# --------------------------------------------------------
            Step 1: Walk the full graph and collect every certified
            model, grouped by its resolved target database.
 
@@ -426,14 +441,16 @@
                 "[cert_grants] No certified models found in graph — skipping GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN.",
                 info=true
             ) }}
-        {% endif %}
+        {% endif %} {# certified_by_db length check #}
+
+        {% endif %} {# environment guard — PR/PD skip #}
 
         {% else %}
             {{ log(
                 "[cert_grants] Skipping — session role '" ~ target.role ~ "' is not a DEPLOY role.",
                 info=true
             ) }}
-        {% endif %}
+        {% endif %} {# DEPLOY role guard #}
 
     {% endif %}
 {% endmacro %}
