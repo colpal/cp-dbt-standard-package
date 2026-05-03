@@ -5,8 +5,35 @@
   the dbt project (orphaned tables/views/SVs).
 
   Arguments:
-    dry_run (str): When 'false' (default), DROP statements are executed.
-                   Any other value logs the commands without running them.
+    dry_run (str|bool): When 'false' or false (default), DROP statements are
+                        executed. Any other value logs the commands without
+                        running them. Both boolean and string forms are accepted
+                        — the value is normalized to a lowercase string at macro
+                        entry (false → 'false', true → 'true').
+
+  Configuration (dbt vars):
+    drop_unneeded_objects_protected_schemas (list[str]):
+      Schemas to exclude from all cleanup queries.
+      Default: ['UTIL_COMMON', 'UTIL_SECURITY', 'INFORMATION_SCHEMA']
+      Consumer repos may extend this list in dbt_project.yml:
+        vars:
+          drop_unneeded_objects_protected_schemas:
+            - UTIL_COMMON
+            - UTIL_SECURITY
+            - INFORMATION_SCHEMA
+            - LANDING  # repo-specific addition
+
+  Allowlist keying (Fix 2):
+    All object matching is done via fully-qualified SCHEMA.NAME keys (and
+    SCHEMA.NAME.TYPE for materialization-change detection). This prevents a
+    rogue orphan TABLE_B.FCT_ORDERS from being protected just because the
+    dbt model FCT_ORDERS lives in TABLE_A.
+
+  Error resilience (Fix 4):
+    Each DROP is executed inside a Snowflake Scripting anonymous block so that
+    a failed drop (permission error, dependency conflict, etc.) is logged as a
+    WARNING and the loop continues — it does not abort cleanup for all remaining
+    objects. IF EXISTS in the DROP command handles the "object vanished" race.
 
   Semantic View cleanup (requires cp-dbt-standard-package ≥ 2.7.0):
     • Skipped entirely if the project has no nodes with
@@ -15,139 +42,220 @@
       positives when SVs in different schemas share the same node name.
     • Only applies to the dbt_model output format. SVs created via
       SV_OUTPUT_FORMAT=snowflake_ddl are not tracked by this macro.
+    • LAST_QUERY_ID() safety: on-run-end hooks execute in a single-threaded,
+      sequential dbt context — no concurrent queries can interleave between the
+      SHOW SEMANTIC VIEWS call and the RESULT_SCAN(LAST_QUERY_ID()) call.
 -#}
 {% macro drop_unneeded_objects(dry_run='false') %}
+
+{# Fix 1: Normalize dry_run — accept bool (false/true) or string ('false'/'true').
+   After this, dry_run == 'false' is reliable regardless of how the caller
+   passes the value. #}
+{% set dry_run = dry_run | string | lower %}
+
+{# Fix 3: Read protected schemas from a dbt var so consumer repos can extend
+   the default list without modifying this macro. #}
+{% set protected_schemas = var(
+    'drop_unneeded_objects_protected_schemas',
+    ['UTIL_COMMON', 'UTIL_SECURITY', 'INFORMATION_SCHEMA']
+) | map('upper') | list %}
+
 {% if execute %}
-  {% set current_models=['DBT_STATE'] %}
-  {% set models_type=['DBT_STATE.TABLE'] %}  
-  --Get the models that currently exist in dbt
+
+  {# Fix 2: Build FQN-keyed allowlists (SCHEMA.NAME and SCHEMA.NAME.TYPE)
+     instead of name-only lists. This prevents schema-blind false protection.
+
+     node.schema is always non-null in a compiled dbt graph:
+       - Models with +schema config → resolved custom schema (e.g. 'MARTS_FCT')
+       - Models without +schema config → target.schema (e.g. 'PUBLIC')
+     dbt-core guarantees this fallback before calling generate_schema_name,
+     so no null-handling is required here.
+
+     semantic_view nodes are excluded — they never appear in
+     INFORMATION_SCHEMA.TABLES and are handled by the dedicated SV block. #}
+  {% set current_model_fqns = [] %}      {# SCHEMA.NAME pairs #}
+  {% set current_model_type_fqns = [] %} {# SCHEMA.NAME.TYPE triples #}
+
   {% for node in graph.nodes.values()
-     | selectattr("resource_type", "in", ["model", "seed", "snapshot"])%}
-    {% do current_models.append(node.name) %} 
-    {% do models_type.append(node.name ~ "." ~ node.config.materialized) %} 
+     | selectattr("resource_type", "in", ["model", "seed", "snapshot"])
+     | rejectattr("config.materialized", "equalto", "semantic_view") %}
+    {% set node_schema = node.schema | upper %}
+    {% set node_name   = node.name   | upper %}
+    {% set eff_type = node.config.materialized
+        | replace("seed",        "table")
+        | replace("incremental", "table")
+        | replace("snapshot",    "table")
+        | upper %}
+    {% do current_model_fqns.append(node_schema ~ "." ~ node_name) %}
+    {% do current_model_type_fqns.append(node_schema ~ "." ~ node_name ~ "." ~ eff_type) %}
   {% endfor %}
 
-  -- Collect expected Semantic View FQNs (SCHEMA.NAME) for dbt_model / semantic_view materialization.
-  -- Using fully-qualified keys prevents false-positive drops when two SVs in different schemas
-  -- share the same node name (e.g. MARTS_A.FCT_SALES and MARTS_B.FCT_SALES).
+  -- Collect expected Semantic View FQNs (SCHEMA.NAME) for semantic_view materialization.
+  -- Using fully-qualified keys prevents false-positive drops when two SVs in
+  -- different schemas share the same node name (e.g. MARTS_A.FCT_SALES and MARTS_B.FCT_SALES).
   {% set current_sv_fqns = [] %}
   {% for node in graph.nodes.values()
      | selectattr("resource_type", "equalto", "model")
      | selectattr("config.materialized", "equalto", "semantic_view") %}
     {% do current_sv_fqns.append((node.schema | upper) ~ "." ~ (node.name | upper)) %}
   {% endfor %}
+
 {% endif %}
 
-{% set current_models_type=[] %}
-{%- for model in models_type -%}
-    {% do current_models_type.append(model | replace(".seed",".table") | replace(".incremental",".table") | replace(".snapshot",".table")) %} 
-{%- endfor -%}
-
---Run a query to create the drop statements for all relations in snowflake that are NOT in the dbt project
+-- ── Query 1: Drop objects not present in the dbt project at all ─────────────
+-- Uses SCHEMA.NAME FQN matching to avoid schema-blind false protection.
+-- DBT_STATE is always protected by name (schema-agnostic sentinel).
 {% set cleanup_query %}
       with models_to_drop as (
         select
-          case 
-            when table_type = 'BASE TABLE' then 'TABLE'
-            when table_type = 'VIEW' then 'VIEW'
+          case
+            when table_type = 'BASE TABLE'   then 'TABLE'
+            when table_type = 'VIEW'         then 'VIEW'
             when table_type = 'ICEBERG TABLE' then 'TABLE'
           end as relation_type,
           concat_ws('.', table_catalog, table_schema, table_name) as relation_name
-        from 
+        from
           {{ target.database }}.information_schema.tables
-        where table_schema not in ('UTIL_COMMON','UTIL_SECURITY','INFORMATION_SCHEMA')
-          and table_name not in
-            ({%- for model in current_models -%}
-                '{{ model.upper() }}'
-                {%- if not loop.last -%}
-                    ,
-                {% endif %}
-            {%- endfor -%}))      
-      select 
+        where table_schema not in
+            ({%- for s in protected_schemas -%}
+                '{{ s }}'
+                {%- if not loop.last -%},{%- endif -%}
+            {%- endfor -%})
+          and table_name != 'DBT_STATE'
+          and concat_ws('.', table_schema, table_name) not in
+            ({%- for fqn in current_model_fqns -%}
+                '{{ fqn }}'
+                {%- if not loop.last -%},{%- endif -%}
+            {%- endfor -%})
+      )
+      select
         'DROP ' || relation_type || ' IF EXISTS ' || relation_name || ';' as drop_commands
-      from 
+      from
         models_to_drop
-      
-      -- intentionally exclude unhandled table_types, including 'external table`
+      -- intentionally exclude unhandled table_types, including 'EXTERNAL TABLE'
       where drop_commands is not null
-  {% endset %}
+{% endset %}
 
---Run a query to detect the materialization change and create the drop statements
+-- ── Query 2: Drop objects whose materialization type changed ─────────────────
+-- Detects e.g. a model that was a VIEW but is now a TABLE (old VIEW must be
+-- dropped before the TABLE can be created).
+-- Uses SCHEMA.NAME.TYPE triple matching for the same schema-awareness reason.
 {% set tab_vw_cleanup_query %}
       with tab_vw_to_drop as (
         select
-        table_name,
-          case 
-            when table_type = 'BASE TABLE' then 'TABLE'
-            when table_type = 'VIEW' then 'VIEW'
+          table_schema,
+          table_name,
+          case
+            when table_type = 'BASE TABLE'   then 'TABLE'
+            when table_type = 'VIEW'         then 'VIEW'
             when table_type = 'ICEBERG TABLE' then 'TABLE'
-          end as relation_type, 
+          end as relation_type,
           concat_ws('.', table_catalog, table_schema, table_name) as relation_name
-        from 
+        from
           {{ target.database }}.information_schema.tables
-        where table_schema not in ('UTIL_COMMON','UTIL_SECURITY','INFORMATION_SCHEMA') ),
-
+        where table_schema not in
+            ({%- for s in protected_schemas -%}
+                '{{ s }}'
+                {%- if not loop.last -%},{%- endif -%}
+            {%- endfor -%})
+      ),
 
       tab_vw_to_drop_final as (
         select
-          relation_type, 
-          relation_name, 
-          concat_ws('.', table_name, relation_type) as sf_tabnm_type
-        from 
+          relation_type,
+          relation_name,
+          -- Fix 2: use SCHEMA.NAME.TYPE so that FCT_ORDERS.VIEW in SCHEMA_B
+          -- is not protected just because FCT_ORDERS.TABLE exists in SCHEMA_A.
+          concat_ws('.', table_schema, table_name, relation_type) as sf_schema_tabnm_type
+        from
           tab_vw_to_drop
-          where sf_tabnm_type not in 
-            ({%- for model in current_models_type -%}
-                '{{ model.upper() }}'
-                {%- if not loop.last -%}
-                    ,
-                {% endif %}
-            {%- endfor -%}) )
+        where sf_schema_tabnm_type not in
+            ({%- for fqn_type in current_model_type_fqns -%}
+                '{{ fqn_type }}'
+                {%- if not loop.last -%},{%- endif -%}
+            {%- endfor -%})
+      )
 
-      select 
+      select
         'DROP ' || relation_type || ' IF EXISTS ' || relation_name || ';' as drop_tab_vw_command
-      from 
+      from
         tab_vw_to_drop_final
-      
-      -- intentionally exclude unhandled table_types, including 'external table`
+      -- intentionally exclude unhandled table_types, including 'EXTERNAL TABLE'
       where drop_tab_vw_command is not null
-  {% endset %}
+{% endset %}
 
+-- ── Execute Query 1 results ──────────────────────────────────────────────────
 {% set drop_commands = run_query(cleanup_query).columns[0].values() %}
 {% if drop_commands %}
-{% do log("PRINTING CLEANUP_QUERY LOG", True) %}
+  {% do log("PRINTING CLEANUP_QUERY LOG", True) %}
   {% for drop_command in drop_commands %}
     {% do log(drop_command, True) %}
+    {# Fix 4: Wrap each DROP in a Snowflake Scripting anonymous block.
+       The block always returns a string ('SUCCESS' or 'ERROR: ...') so dbt
+       never raises DbtRuntimeError on a failed drop — we log the error and
+       continue processing remaining orphans. #}
     {% if dry_run == 'false' %}
-      {% do log('drop_command inside dry_run is false', True) %}
-      {% do run_query(drop_command) %}
+      {% set wrapped_cmd %}
+EXECUTE IMMEDIATE $$
+BEGIN
+  {{ drop_command }}
+  RETURN 'SUCCESS';
+EXCEPTION
+  WHEN OTHER THEN
+    RETURN 'ERROR: ' || SQLERRM;
+END;
+$$
+      {% endset %}
+      {% set result = run_query(wrapped_cmd) %}
+      {% if result.rows | length > 0 and result.rows[0][0] is not none
+         and (result.rows[0][0] | string).startswith('ERROR') %}
+        {% do log("WARNING — drop failed (continuing): " ~ result.rows[0][0], True) %}
+      {% endif %}
     {% endif %}
   {% endfor %}
 {% else %}
   {% do log('No objects to clean.', True) %}
 {% endif %}
 
+-- ── Execute Query 2 results ──────────────────────────────────────────────────
 {% set drop_tab_vw = run_query(tab_vw_cleanup_query).columns[0].values() %}
 {% if drop_tab_vw %}
-{% do log("PRINTING TAB_VW_CLEANUP_QUERY LOG", True) %}
+  {% do log("PRINTING TAB_VW_CLEANUP_QUERY LOG", True) %}
   {% for drop_tabvw in drop_tab_vw %}
     {% do log(drop_tabvw, True) %}
     {% if dry_run == 'false' %}
-      {% do log('drop tabvw inside dry_run is false', True) %}
-      {% do run_query(drop_tabvw) %}
+      {% set wrapped_tabvw %}
+EXECUTE IMMEDIATE $$
+BEGIN
+  {{ drop_tabvw }}
+  RETURN 'SUCCESS';
+EXCEPTION
+  WHEN OTHER THEN
+    RETURN 'ERROR: ' || SQLERRM;
+END;
+$$
+      {% endset %}
+      {% set result = run_query(wrapped_tabvw) %}
+      {% if result.rows | length > 0 and result.rows[0][0] is not none
+         and (result.rows[0][0] | string).startswith('ERROR') %}
+        {% do log("WARNING — drop failed (continuing): " ~ result.rows[0][0], True) %}
+      {% endif %}
     {% endif %}
   {% endfor %}
 {% else %}
   {% do log('No objects to clean.', True) %}
 {% endif %}
 
--- ── Semantic View cleanup ──────────────────────────────────────────────────
+-- ── Semantic View cleanup ────────────────────────────────────────────────────
 -- Safety guard: only run if graph.nodes contains semantic_view nodes.
--- If the project has no SV models, current_sv_names is empty and we skip
+-- If the project has no SV models, current_sv_fqns is empty and we skip
 -- entirely to prevent mass drops in repos not yet using SVs.
 {% if execute and current_sv_fqns | length > 0 %}
   {% do log("SEMANTIC VIEW CLEANUP: expected SV FQNs: " ~ current_sv_fqns | join(', '), True) %}
 
-  -- Step 1: discover what SVs currently exist in the target database
+  -- Step 1: discover what SVs currently exist in the target database.
+  -- LAST_QUERY_ID() safety: on-run-end is single-threaded in dbt — no
+  -- concurrent queries can interleave between SHOW and RESULT_SCAN here.
   {% do run_query("SHOW SEMANTIC VIEWS IN DATABASE " ~ target.database) %}
   {% set existing_sv_results = run_query(
       "SELECT \"name\", \"schema_name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))"
@@ -164,7 +272,23 @@
             ~ target.database ~ "." ~ sv_schema ~ "." ~ sv_name ~ ";" %}
         {% do log("SV orphan detected — queuing: " ~ drop_sv_cmd, True) %}
         {% if dry_run == 'false' %}
-          {% do run_query(drop_sv_cmd) %}
+          {# Fix 4: same Snowflake Scripting wrapper for SV drops. #}
+          {% set wrapped_sv %}
+EXECUTE IMMEDIATE $$
+BEGIN
+  {{ drop_sv_cmd }}
+  RETURN 'SUCCESS';
+EXCEPTION
+  WHEN OTHER THEN
+    RETURN 'ERROR: ' || SQLERRM;
+END;
+$$
+          {% endset %}
+          {% set result = run_query(wrapped_sv) %}
+          {% if result.rows | length > 0 and result.rows[0][0] is not none
+             and (result.rows[0][0] | string).startswith('ERROR') %}
+            {% do log("WARNING — SV drop failed (continuing): " ~ result.rows[0][0], True) %}
+          {% endif %}
         {% endif %}
       {% endif %}
     {% endfor %}
@@ -177,4 +301,3 @@
 {% endif %}
 
 {%- endmacro -%}
-
