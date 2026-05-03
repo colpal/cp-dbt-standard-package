@@ -1,3 +1,21 @@
+{#-
+  drop_unneeded_objects(dry_run='false')
+  ─────────────────────────────────────
+  Runs on-run-end to drop Snowflake objects that are no longer represented in
+  the dbt project (orphaned tables/views/SVs).
+
+  Arguments:
+    dry_run (str): When 'false' (default), DROP statements are executed.
+                   Any other value logs the commands without running them.
+
+  Semantic View cleanup (requires cp-dbt-standard-package ≥ 2.7.0):
+    • Skipped entirely if the project has no nodes with
+      config.materialized == 'semantic_view' (safe for repos not yet using SVs).
+    • Orphan detection uses fully-qualified SCHEMA.NAME keys to avoid false
+      positives when SVs in different schemas share the same node name.
+    • Only applies to the dbt_model output format. SVs created via
+      SV_OUTPUT_FORMAT=snowflake_ddl are not tracked by this macro.
+-#}
 {% macro drop_unneeded_objects(dry_run='false') %}
 {% if execute %}
   {% set current_models=['DBT_STATE'] %}
@@ -9,12 +27,14 @@
     {% do models_type.append(node.name ~ "." ~ node.config.materialized) %} 
   {% endfor %}
 
-  -- Collect expected Semantic View names (dbt_model / semantic_view materialization)
-  {% set current_sv_names = [] %}
+  -- Collect expected Semantic View FQNs (SCHEMA.NAME) for dbt_model / semantic_view materialization.
+  -- Using fully-qualified keys prevents false-positive drops when two SVs in different schemas
+  -- share the same node name (e.g. MARTS_A.FCT_SALES and MARTS_B.FCT_SALES).
+  {% set current_sv_fqns = [] %}
   {% for node in graph.nodes.values()
      | selectattr("resource_type", "equalto", "model")
      | selectattr("config.materialized", "equalto", "semantic_view") %}
-    {% do current_sv_names.append(node.name | upper) %}
+    {% do current_sv_fqns.append((node.schema | upper) ~ "." ~ (node.name | upper)) %}
   {% endfor %}
 {% endif %}
 
@@ -124,8 +144,8 @@
 -- Safety guard: only run if graph.nodes contains semantic_view nodes.
 -- If the project has no SV models, current_sv_names is empty and we skip
 -- entirely to prevent mass drops in repos not yet using SVs.
-{% if execute and current_sv_names | length > 0 %}
-  {% do log("SEMANTIC VIEW CLEANUP: expected SVs: " ~ current_sv_names | join(', '), True) %}
+{% if execute and current_sv_fqns | length > 0 %}
+  {% do log("SEMANTIC VIEW CLEANUP: expected SV FQNs: " ~ current_sv_fqns | join(', '), True) %}
 
   -- Step 1: discover what SVs currently exist in the target database
   {% do run_query("SHOW SEMANTIC VIEWS IN DATABASE " ~ target.database) %}
@@ -138,7 +158,8 @@
     {% for row in existing_sv_results.rows %}
       {% set sv_name   = row[0] | upper %}
       {% set sv_schema = row[1] | upper %}
-      {% if sv_name not in current_sv_names %}
+      {% set sv_fqn    = sv_schema ~ "." ~ sv_name %}
+      {% if sv_fqn not in current_sv_fqns %}
         {% set drop_sv_cmd = "DROP SEMANTIC VIEW IF EXISTS "
             ~ target.database ~ "." ~ sv_schema ~ "." ~ sv_name ~ ";" %}
         {% do log("SV orphan detected — queuing: " ~ drop_sv_cmd, True) %}
