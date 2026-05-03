@@ -415,29 +415,32 @@
         {% endfor %}
 
         {# --------------------------------------------------------
-           Step 2: Call GRANT_CERTIFIED_READ_ACCESS to refresh certified grants.
-
-           NOTE: GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN (2-arg, domain-scoped)
-           has NOT been implemented in DPI yet. Until it is, we call the
-           0-arg GRANT_CERTIFIED_READ_ACCESS which reads TAG_REFERENCES
-           directly and handles all domains.
-
-           UTIL_DB -> OPS_CUR migration: the procedure currently lives at
-           OPS_CUR.UTIL_COMMON.GRANT_CERTIFIED_READ_ACCESS.
+           Step 2: Call GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN once per
+           domain database, passing the scoped JSON manifest from the
+           dbt graph. Procedure: OPS_CUR.UTIL_COMMON.GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN
+           Implemented in DPI: feature/DPSA-321.grant-certified-read-access-by-domain
            -------------------------------------------------------- #}
         {% if certified_by_db | length > 0 %}
-            {{ log(
-                "[cert_grants] Certified objects found in " ~ certified_by_db.keys() | list | join(', ')
-                ~ " — calling GRANT_CERTIFIED_READ_ACCESS (role: " ~ target.role ~ ")",
-                info=true
-            ) }}
-            {% set call_sql %}
-                CALL OPS_CUR.UTIL_COMMON.GRANT_CERTIFIED_READ_ACCESS()
-            {% endset %}
-            {% do run_query(call_sql) %}
+            {% for domain_db, objects in certified_by_db.items() %}
+                {% set json_payload = tojson(objects) %}
+                {{ log(
+                    "[cert_grants] Calling GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN"
+                    ~ " for " ~ domain_db
+                    ~ " — " ~ objects | length ~ " certified object(s)"
+                    ~ " (role: " ~ target.role ~ ")",
+                    info=true
+                ) }}
+                {% set call_sql %}
+                    CALL OPS_CUR.UTIL_COMMON.GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN(
+                        '{{ domain_db }}',
+                        '{{ json_payload | replace("'", "\\'") }}'
+                    )
+                {% endset %}
+                {% do run_query(call_sql) %}
+            {% endfor %}
         {% else %}
             {{ log(
-                "[cert_grants] No certified models found in graph — skipping GRANT_CERTIFIED_READ_ACCESS.",
+                "[cert_grants] No certified models found in graph — skipping GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN.",
                 info=true
             ) }}
         {% endif %} {# certified_by_db length check #}
