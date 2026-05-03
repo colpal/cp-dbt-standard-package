@@ -102,6 +102,8 @@
 
 {% endif %}
 
+{% if execute %}
+
 -- ── Query 1: Drop objects not present in the dbt project at all ─────────────
 -- Uses SCHEMA.NAME FQN matching to avoid schema-blind false protection.
 -- DBT_STATE is always protected by name (schema-agnostic sentinel).
@@ -245,6 +247,8 @@ $$
 {% else %}
   {% do log('No objects to clean.', True) %}
 {% endif %}
+
+{% endif %}{# execute — queries 1 & 2 #}
 
 -- ── Semantic View cleanup ────────────────────────────────────────────────────
 -- Safety guard: only run if graph.nodes contains semantic_view nodes.
