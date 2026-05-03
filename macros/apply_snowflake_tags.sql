@@ -414,7 +414,7 @@
                     info=true
                 ) }}
                 {% set call_sql %}
-                    CALL OPS_CUR.UTIL_COMMON.GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN(
+                    CALL UTIL_DB.PUBLIC.GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN(
                         '{{ domain_db }}',
                         '{{ json_payload | replace("'", "\\'") }}'
                     )
