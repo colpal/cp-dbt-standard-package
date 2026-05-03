@@ -228,14 +228,12 @@
   {% do log("SEMANTIC VIEW CLEANUP: expected SV FQNs: " ~ current_sv_fqns | join(', '), True) %}
 
   -- Step 1: discover what SVs currently exist in the target database.
-  -- Uses INFORMATION_SCHEMA.TABLES (table_type = 'SEMANTIC VIEW') instead of
-  -- SHOW SEMANTIC VIEWS + RESULT_SCAN — the SHOW pattern is DDL-class and
-  -- causes 'cannot access local variable connection' in dbt-snowflake 1.11.x.
+  -- Snowflake semantic views are NOT in information_schema.tables — they have
+  -- their own dedicated catalog view: information_schema.semantic_views.
   {% set existing_sv_results = run_query(
-      "SELECT table_name AS name, table_schema AS schema_name"
-      " FROM " ~ target.database ~ ".information_schema.tables"
-      " WHERE table_type = 'SEMANTIC VIEW'"
-      " AND table_schema != 'INFORMATION_SCHEMA'"
+      "SELECT semantic_view_name AS name, semantic_view_schema AS schema_name"
+      " FROM " ~ target.database ~ ".information_schema.semantic_views"
+      " WHERE semantic_view_schema != 'INFORMATION_SCHEMA'"
   ) %}
 
   {% if existing_sv_results and existing_sv_results.rows | length > 0 %}
