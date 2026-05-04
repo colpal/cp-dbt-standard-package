@@ -347,29 +347,18 @@
         {% set role_upper = target.role | upper %}
         {% if 'DEPLOY' in role_upper or 'ELT' in role_upper %}
 
-        {# --------------------------------------------------------
-           Environment guard: skip in PR / PD (pre-deploy) databases.
-           UTIL_DB.PUBLIC.GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN only
-           exists in prod, and the PR deploy role has no EXECUTE on it.
-           The hourly Snowflake task is the safety net for ephemeral runs.
-           -------------------------------------------------------- #}
-        {% set db_upper = target.database | upper %}
-        {% if '_PR_' in db_upper or db_upper.endswith('_PD') %}
-            {{ log(
-                "[cert_grants] Skipping — ephemeral environment detected (target.database: "
-                ~ target.database ~ "). UTIL_DB.PUBLIC proc not available in PR/PD.",
-                info=true
-            ) }}
-        {% else %}
 
         {# --------------------------------------------------------
-           Step 1: Walk the full graph and collect every certified
-           model, grouped by its resolved target database.
+           Step 1: Walk the full graph and collect every certified model,
+           grouped by its resolved target database.
 
-           We iterate ALL nodes (not just `results`) so the procedure
-           always receives the complete certified set — including models
-           that weren't re-run in this dbt invocation but still require
-           their grants to remain active.
+           Always runs — even in PR/PD environments — so CI logs show
+           exactly which domains and objects would have grants applied
+           (dry-run visibility). The actual CALL is gated separately.
+
+           We iterate ALL nodes (not just `results`) so the manifest
+           always contains the complete certified set, including models
+           not rebuilt in this run but whose grants must remain active.
            -------------------------------------------------------- #}
         {% set certified_by_db = {} %}
 
@@ -393,16 +382,16 @@
                     {% set db  = node.database | upper %}
                     {% set mat = node.config.materialized %}
 
-                    {# Map dbt materialization → Snowflake object type.
-                       incremental / table → TABLE; view → VIEW.
-                       ephemeral models produce no physical object — skip. #}
+                    {# Map dbt materialization -> Snowflake object type.
+                       incremental / table -> TABLE; view -> VIEW.
+                       ephemeral models produce no physical object -- skip. #}
                     {% if mat == 'ephemeral' %}
-                        {# nothing to grant — ephemeral models are inlined #}
+                        {# nothing to grant -- ephemeral models are inlined #}
                     {% else %}
                         {% set obj_type = 'VIEW' if mat == 'view' else 'TABLE' %}
 
-                        {# Skip CI preview / prototype databases.
-                           These are ephemeral and should never have prod grants. #}
+                        {# Collect certified objects from production databases only.
+                           PR/PD databases are ephemeral and never hold prod grants. #}
                         {% if '_PR_' not in db and not db.endswith('_PD') %}
 
                             {% if db not in certified_by_db %}
@@ -423,36 +412,55 @@
 
         {# --------------------------------------------------------
            Step 2: Call GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN once per
-           domain database, passing the scoped JSON manifest from the
-           dbt graph. Procedure: OPS_CUR.UTIL_COMMON.GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN
-           Implemented in DPI: feature/DPSA-321.grant-certified-read-access-by-domain
+           domain database, passing the scoped JSON manifest.
+
+           In PR / PD environments: log the manifest as a dry run only.
+           No CALL is made -- the hourly task is the safety net for
+           ephemeral environments.
+
+           In production: execute the CALL.
            -------------------------------------------------------- #}
+        {% set db_upper = target.database | upper %}
+        {% set is_ephemeral = '_PR_' in db_upper or db_upper.endswith('_PD') %}
+
         {% if certified_by_db | length > 0 %}
-            {% for domain_db, objects in certified_by_db.items() %}
-                {% set json_payload = tojson(objects) %}
+            {% if is_ephemeral %}
                 {{ log(
-                    "[cert_grants] Calling GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN"
-                    ~ " for " ~ domain_db
-                    ~ " — " ~ objects | length ~ " certified object(s)"
-                    ~ " (role: " ~ target.role ~ ")",
+                    "[cert_grants] DRY RUN (ephemeral env: " ~ target.database ~ ") -- "
+                    ~ "the following would have GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN called in production:",
                     info=true
                 ) }}
-                {% set call_sql %}
-                    CALL OPS_CUR.UTIL_COMMON.GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN(
-                        '{{ domain_db }}',
-                        '{{ json_payload | replace("'", "\\'") }}'
-                    )
-                {% endset %}
-                {% do run_query(call_sql) %}
-            {% endfor %}
+                {% for domain_db, objects in certified_by_db.items() %}
+                    {{ log(
+                        "[cert_grants]   -> " ~ domain_db ~ ": " ~ objects | length ~ " certified object(s)",
+                        info=true
+                    ) }}
+                {% endfor %}
+            {% else %}
+                {% for domain_db, objects in certified_by_db.items() %}
+                    {% set json_payload = tojson(objects) %}
+                    {{ log(
+                        "[cert_grants] Calling GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN"
+                        ~ " for " ~ domain_db
+                        ~ " -- " ~ objects | length ~ " certified object(s)"
+                        ~ " (role: " ~ target.role ~ ")",
+                        info=true
+                    ) }}
+                    {% set call_sql %}
+                        CALL OPS_CUR.UTIL_COMMON.GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN(
+                            '{{ domain_db }}',
+                            '{{ json_payload | replace("'", "\'") }}'
+                        )
+                    {% endset %}
+                    {% do run_query(call_sql) %}
+                {% endfor %}
+            {% endif %}
         {% else %}
             {{ log(
-                "[cert_grants] No certified models found in graph — skipping GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN.",
+                "[cert_grants] No certified models found in graph -- skipping GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN.",
                 info=true
             ) }}
         {% endif %} {# certified_by_db length check #}
-
-        {% endif %} {# environment guard — PR/PD skip #}
 
         {% else %}
             {{ log(
