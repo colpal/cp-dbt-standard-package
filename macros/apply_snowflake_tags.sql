@@ -334,11 +334,18 @@
     {% if execute %}
 
         {# --------------------------------------------------------
-           Role guard: only DEPLOY roles should manage certified grants.
-           target.role reflects the actual Snowflake session role dbt
-           connected with (set via profiles.yml → role: ...).
+           Role guard: fire for DEPLOY roles (CI/CD) and ELT roles (Airflow).
+           Both can rebuild models (DROP + CREATE) which wipes all Snowflake
+           object-level grants including CERTIFIED_READ.SELECT. The proc must
+           run on-run-end to reapply grants immediately rather than waiting
+           up to 60 min for the hourly GRANT_CERTIFIED_READ_ACCESS task.
+
+           ELT safety: execute_as = OWNER on the proc means the actual GRANT
+           DDL runs as the OPS owner — not the ELT role itself. ELT only
+           needs EXECUTE (USAGE) on the procedure.
            -------------------------------------------------------- #}
-        {% if 'DEPLOY' in (target.role | upper) %}
+        {% set role_upper = target.role | upper %}
+        {% if 'DEPLOY' in role_upper or 'ELT' in role_upper %}
 
         {# --------------------------------------------------------
            Environment guard: skip in PR / PD (pre-deploy) databases.
