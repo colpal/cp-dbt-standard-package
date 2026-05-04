@@ -140,15 +140,21 @@
         {% set tag_value = val_ns.matched_value %}
     {% endif %}
 
-    {# Identify relation type (use passed value if available, otherwise query) #}
+    {# Identify relation and detect Iceberg format #}
+    {% set relation = adapter.get_relation(database_nm, schema, identifier) %}
     {% if not relation_type %}
-        {% set relation = adapter.get_relation(database_nm, schema, identifier) %}
         {% set relation_type = relation.type | upper if relation else 'TABLE' %}
+    {% endif %}
+
+    {# Iceberg tables require ALTER ICEBERG TABLE syntax #}
+    {% set ddl_prefix = '' %}
+    {% if relation and relation.is_iceberg_format %}
+        {% set ddl_prefix = 'ICEBERG ' %}
     {% endif %}
 
     {# Apply tag #}
     {% set sql %}
-      ALTER {{ relation_type }} {{ database_nm }}.{{ schema }}.{{ identifier }}
+      ALTER {{ ddl_prefix }}{{ relation_type }} {{ database_nm }}.{{ schema }}.{{ identifier }}
       SET TAG {{ config.tag_database }}.{{ config.tag_schema }}.{{ tag_name }} = '{{ tag_value }}'
     {% endset %}
 
@@ -203,14 +209,20 @@
         {% set tag_value = val_ns.matched_value %}
     {% endif %}
 
-    {# Use passed relation_type if available, otherwise query #}
+    {# Identify relation and detect Iceberg format #}
+    {% set relation = adapter.get_relation(database_nm, schema, identifier) %}
     {% if not relation_type %}
-        {% set relation = adapter.get_relation(database_nm, schema, identifier) %}
         {% set relation_type = relation.type | upper if relation else 'TABLE' %}
     {% endif %}
 
+    {# Iceberg tables require ALTER ICEBERG TABLE syntax #}
+    {% set ddl_prefix = '' %}
+    {% if relation and relation.is_iceberg_format %}
+        {% set ddl_prefix = 'ICEBERG ' %}
+    {% endif %}
+
     {% set sql %}
-      ALTER {{ relation_type }} {{ database_nm }}.{{ schema }}.{{ identifier }}
+      ALTER {{ ddl_prefix }}{{ relation_type }} {{ database_nm }}.{{ schema }}.{{ identifier }}
       MODIFY COLUMN {{ column_name }}
       SET TAG {{ config.tag_database }}.{{ config.tag_schema }}.{{ tag_name }} = '{{ tag_value }}'
     {% endset %}
