@@ -1,5 +1,5 @@
 {#
-    Override snowflake__create_table_as to inject Iceberg type-safety layer.
+    Override snowflake__create_table_built_in_sql to inject Iceberg type-safety layer.
 
     Problem: Snowflake Iceberg v2 tables do not support certain data types natively:
         - TIMESTAMP_LTZ/NTZ/TZ with precision != 6
@@ -11,123 +11,35 @@
         1. Create a temporary view from the original compiled_code
         2. Introspect the view to discover actual column types
         3. Build a safe SELECT with CASTs for incompatible types
-        4. Pass the safe SQL to the native adapter sub-macros
+        4. Pass the safe SQL to the native adapter sub-macro
 
-    For non-Iceberg tables (INFO_SCHEMA, temporary), we pass through unchanged.
-    This override is forward-compatible with dbt-snowflake 1.11.0+ because it
-    delegates all DDL generation to the native snowflake__create_table_*_sql macros.
+    Architecture: We override snowflake__create_table_built_in_sql (not
+    snowflake__create_table_as). The native adapter's snowflake__create_table_as
+    handles all catalog routing and build_catalog_relation() calls. It then
+    disp10es to this sub-macro for BUILT_IN Iceberg tables. This avoids
+    DbtCatalogIntegrationNotFoundError when custom catalogs from catalogs.yml
+    are not yet registered (e.g., during dbt ls / parsing).
+
+    The native dbt-snowflake 1.11+ adapter also handles:
+    - dbt_snowflake_get_tmp_relation_type (forces 'table' for BUILT_IN)
+    - Non-Iceberg table routing (INFO_SCHEMA, ICEBERG_REST, temporary)
+    So we no longer need to override those.
 #}
 
-{#
-    Override dbt_snowflake_get_tmp_relation_type to force 'table' for BUILT_IN Iceberg
-    models. This ensures incremental runs always create a temp TABLE (not a view), which
-    routes through create_table_as(True, ...) where our type-safety layer is applied.
-    Without this, strategies like merge/append would create a temp view with raw types,
-    and the subsequent MERGE/INSERT into the Iceberg target could fail on incompatible types.
-#}
-{% macro dbt_snowflake_get_tmp_relation_type(strategy, unique_key, language) %}
-    {%- set catalog_relation = adapter.build_catalog_relation(config.model) -%}
-    {%- if catalog_relation.catalog_type == 'BUILT_IN' -%}
-        {{ return("table") }}
-    {%- endif -%}
-
-    {#-- For non-Iceberg models, use native logic --#}
-    {%- set tmp_relation_type = config.get('tmp_relation_type') -%}
-
-    {% if language == "python"
-        and tmp_relation_type is not none %}
-        {% do exceptions.raise_compiler_error(
-            "Python models currently only support "
-            "'table' for tmp_relation_type but "
-            ~ tmp_relation_type ~ " was specified."
-        ) %}
-    {% endif %}
-
-    {#-- Python always uses a temporary table --#}
-    {% if language != "sql" %}
-        {{ return("table") }}
-    {% endif %}
-
-    {#-- CLD only supports Iceberg tables --#}
-    {% if snowflake__is_catalog_linked_database(
-        relation=config.model
-    ) %}
-        {{ return("table") }}
-    {% endif %}
-
-    {% if strategy in ["delete+insert", "microbatch"]
-        and tmp_relation_type is not none
-        and tmp_relation_type not in ("table", "transient")
-        and unique_key is not none %}
-        {% do exceptions.raise_compiler_error(
-            "In order to maintain consistent results"
-            " when `unique_key` is not none, the `"
-            ~ strategy ~ "` strategy only supports "
-            "`table` or `transient` for "
-            "`tmp_relation_type` but "
-            ~ tmp_relation_type ~ " was specified."
-        ) %}
-    {% endif %}
-
-    {% if tmp_relation_type == "table" %}
-        {{ return("table") }}
-    {% elif tmp_relation_type == "view" %}
-        {{ return("view") }}
-    {% elif tmp_relation_type == "transient" %}
-        {{ return("transient") }}
-    {% elif strategy in ("default", "merge", "append", "insert_overwrite") %}
-        {{ return("view") }}
-    {% elif strategy in ["delete+insert", "microbatch"]
-        and unique_key is none %}
-        {{ return("view") }}
-    {% else %}
-        {{ return("table") }}
-    {% endif %}
-{% endmacro %}
-
-
-{% macro snowflake__create_table_as(
-    temporary, relation, compiled_code,
-    language='sql'
+{% macro snowflake__create_table_built_in_sql(
+    relation, compiled_code
 ) -%}
 
-{%- set catalog_relation =
-    adapter.build_catalog_relation(config.model)
--%}
-
-{#-- Non-Iceberg: delegate to native adapter
-     so normal Snowflake tables are unaffected --#}
-{%- if catalog_relation.catalog_type
-    != 'BUILT_IN' -%}
-    {{ return(dbt.snowflake__create_table_as(
-        temporary, relation,
-        compiled_code, language
-    )) }}
-    {%- endif -%}
-
-    {#-- Iceberg BUILT_IN: inject type-safety --#}
-    {%- if language != 'sql' -%}
-    {% do exceptions.raise_compiler_error(
-        'Iceberg is incompatible with '
-        ~ language ~ ' models. '
-        ~ 'Please use a SQL model.'
-    ) %}
-    {%- endif -%}
-
+{#-- Apply type-safe casts for Iceberg-incompatible types --#}
 {%- set safe_compiled_code =
     iceberg_type_safe_wrap(compiled_code) -%}
 
-    {%- if temporary -%}
-    {{ snowflake__create_table_temporary_sql(
-        relation, safe_compiled_code
-    ) }}
-{%- else -%}
-    {{ snowflake__create_table_built_in_sql(
-        relation, safe_compiled_code
-    ) }}
-    {%- endif -%}
+{#-- Delegate to native BUILT_IN DDL generation with safe SQL --#}
+{{ dbt.snowflake__create_table_built_in_sql(
+    relation, safe_compiled_code
+) }}
 
-{% endmacro %}
+{%- endmacro %}
 
 
 {#
