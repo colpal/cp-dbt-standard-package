@@ -425,25 +425,34 @@
 
         {% if certified_by_db | length > 0 %}
             {% if is_ephemeral %}
+                {# ── DRY RUN: log what production would do, no CALL issued ── #}
                 {{ log(
-                    "[cert_grants] DRY RUN (ephemeral env: " ~ target.database ~ ") -- "
-                    ~ "the following would have GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN called in production:",
+                    "[cert_grants] DRY RUN | env: " ~ target.database
+                    ~ " | role: " ~ target.role
+                    ~ " | The following domain(s) would have GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN"
+                    ~ " called if this were a production run:",
                     info=true
                 ) }}
                 {% for domain_db, objects in certified_by_db.items() %}
                     {{ log(
-                        "[cert_grants]   -> " ~ domain_db ~ ": " ~ objects | length ~ " certified object(s)",
+                        "[cert_grants]   domain: " ~ domain_db
+                        ~ "  certified objects: " ~ objects | length,
                         info=true
                     ) }}
                 {% endfor %}
+                {{ log(
+                    "[cert_grants] No grants issued — ephemeral environments do not hold CERTIFIED_READ grants."
+                    ~ " The hourly TAG_BASED_RBAC_CERT_PROC task is the safety net for this environment.",
+                    info=true
+                ) }}
             {% else %}
+                {# ── PRODUCTION: call the proc once per domain ── #}
                 {% for domain_db, objects in certified_by_db.items() %}
                     {% set json_payload = tojson(objects) %}
                     {{ log(
-                        "[cert_grants] Calling GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN"
-                        ~ " for " ~ domain_db
-                        ~ " -- " ~ objects | length ~ " certified object(s)"
-                        ~ " (role: " ~ target.role ~ ")",
+                        "[cert_grants] CALLING | domain: " ~ domain_db
+                        ~ " | certified objects: " ~ objects | length
+                        ~ " | role: " ~ target.role,
                         info=true
                     ) }}
                     {% set call_sql %}
@@ -456,18 +465,32 @@
                 {% endfor %}
             {% endif %}
         {% else %}
-            {{ log(
-                "[cert_grants] No certified models found in graph -- skipping GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN.",
-                info=true
-            ) }}
+            {% if is_ephemeral %}
+                {{ log(
+                    "[cert_grants] SKIPPED | env: " ~ target.database
+                    ~ " | No certified models found targeting production databases."
+                    ~ " In PR/PD runs, all node.database values resolve to ephemeral databases"
+                    ~ " (_PR_*/_PD) and are excluded from grant processing by design.",
+                    info=true
+                ) }}
+            {% else %}
+                {{ log(
+                    "[cert_grants] SKIPPED | No models with IS_CERTIFIED=TRUE found in the dbt graph."
+                    ~ " Verify that certified models have snowflake_tags: {IS_CERTIFIED: 'TRUE'} in their config.",
+                    info=true
+                ) }}
+            {% endif %}
         {% endif %} {# certified_by_db length check #}
 
         {% else %}
             {{ log(
-                "[cert_grants] Skipping — session role '" ~ target.role ~ "' is not a DEPLOY role.",
+                "[cert_grants] SKIPPED | role: '" ~ target.role
+                ~ "' is not a DEPLOY or ELT role — certified grant reconciliation only runs"
+                ~ " for deployment and Airflow pipeline roles to prevent analyst runs from"
+                ~ " triggering privilege changes.",
                 info=true
             ) }}
-        {% endif %} {# DEPLOY role guard #}
+        {% endif %} {# DEPLOY / ELT role guard #}
 
     {% endif %}
 {% endmacro %}
