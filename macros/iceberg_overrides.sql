@@ -3,35 +3,32 @@
 MACRO FILE: iceberg_overrides.sql
 PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to 
             enforce Apache Iceberg type safety and bypass strict contract errors.
+            Non-Iceberg models fall through to native dbt behavior.
 ===============================================================================
 #}
+
+-- Check if model is using built-in Iceberg catalog (safe across dbt 1.9+)
+{% macro _is_built_in_iceberg() %}
+    {%- if adapter | attr('build_catalog_relation') is not none -%}
+        {%- set catalog_relation = adapter.build_catalog_relation(config.model) -%}
+        {%- if catalog_relation is not none and catalog_relation.catalog_type == 'BUILT_IN' -%}
+            {{ return(true) }}
+        {%- endif -%}
+    {%- endif -%}
+    {{ return(false) }}
+{% endmacro %}
+
 
 {# ============================================================================
    SECTION 1: THE DDL NUKE (Bypass YAML Contract Injection)
    ============================================================================ #}
 
 {% macro get_table_columns_and_constraints() %}
-    {{ return('') }}
-{% endmacro %}
-
-{% macro default__get_table_columns_and_constraints() %}
-    {{ return('') }}
-{% endmacro %}
-
-{% macro snowflake__get_table_columns_and_constraints() %}
-    {{ return('') }}
-{% endmacro %}
-
-{% macro render_raw_columns_constraints(raw_columns) %}
-    {{ return('') }}
-{% endmacro %}
-
-{% macro default__render_raw_columns_constraints(raw_columns) %}
-    {{ return('') }}
-{% endmacro %}
-
-{% macro snowflake__render_raw_columns_constraints(raw_columns) %}
-    {{ return('') }}
+    {%- if _is_built_in_iceberg() -%}
+        {{ return('') }}
+    {%- else -%}
+        {{ return(table_columns_and_constraints()) }}
+    {%- endif -%}
 {% endmacro %}
 
 
@@ -42,17 +39,11 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
    ============================================================================ #}
 
 {% macro dbt_snowflake_get_tmp_relation_type(strategy, unique_key, language) %}
-    {%- set catalog_relation = adapter.build_catalog_relation(config.model) -%}
-    {%- if catalog_relation.catalog_type == 'BUILT_IN' -%}
+    {%- if _is_built_in_iceberg() -%}
         {{ return("table") }}
     {%- endif -%}
 
-    {#-- For non-Iceberg models, use native logic --#}
     {%- set tmp_relation_type = config.get('tmp_relation_type') -%}
-
-    {% if snowflake__is_catalog_linked_database(relation=config.model) %}
-        {{ return("table") }}
-    {% endif %}
 
     {% if language != "sql" %}
         {{ return("table") }}
@@ -75,45 +66,42 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
    ============================================================================ #}
 
 {% macro snowflake__create_table_as(temporary, relation, compiled_code, language='sql') -%}
-    {% if language == 'sql' %}
+    {%- if _is_built_in_iceberg() and language == 'sql' -%}
         {% set safe_sql = iceberg_type_safe_wrap(compiled_code) %}
-        
         {% set pre_relation = relation.incorporate(path={"identifier": relation.identifier ~ "__dbt_pre"}) %}
-        
         {% if execute %}
             {% set create_temp_sql = "CREATE OR REPLACE TEMPORARY TABLE " ~ pre_relation ~ " AS \n" ~ safe_sql %}
             {% do run_query(create_temp_sql) %}
         {% endif %}
-        
         {% set final_sql = "SELECT * FROM " ~ pre_relation %}
         {{ return(dbt.snowflake__create_table_as(temporary, relation, final_sql, language)) }}
-    {% else %}
+    {%- else -%}
         {{ return(dbt.snowflake__create_table_as(temporary, relation, compiled_code, language)) }}
-    {% endif %}
+    {%- endif -%}
 {%- endmacro %}
 
 {% macro snowflake__create_view_as(relation, sql) -%}
-    {% set safe_sql = iceberg_type_safe_wrap(sql) %}
-    {{ return(dbt.snowflake__create_view_as(relation, safe_sql)) }}
+    {%- if _is_built_in_iceberg() -%}
+        {% set safe_sql = iceberg_type_safe_wrap(sql) %}
+        {{ return(dbt.snowflake__create_view_as(relation, safe_sql)) }}
+    {%- else -%}
+        {{ return(dbt.snowflake__create_view_as(relation, sql)) }}
+    {%- endif -%}
 {%- endmacro %}
 
 {% macro snowflake__get_create_table_as_sql(temporary, relation, sql) -%}
-    {% set safe_sql = iceberg_type_safe_wrap(sql) %}
-    
-    {% set pre_relation = relation.incorporate(path={"identifier": relation.identifier ~ "__dbt_pre"}) %}
-    
-    {% if execute %}
-        {% set create_temp_sql = "CREATE OR REPLACE TEMPORARY TABLE " ~ pre_relation ~ " AS \n" ~ safe_sql %}
-        {% do run_query(create_temp_sql) %}
-    {% endif %}
-    
-    {% set final_sql = "SELECT * FROM " ~ pre_relation %}
-    
-    {% if 'snowflake__get_create_table_as_sql' in dbt %}
-        {{ return(dbt.snowflake__get_create_table_as_sql(temporary, relation, final_sql)) }}
-    {% else %}
+    {%- if _is_built_in_iceberg() -%}
+        {% set safe_sql = iceberg_type_safe_wrap(sql) %}
+        {% set pre_relation = relation.incorporate(path={"identifier": relation.identifier ~ "__dbt_pre"}) %}
+        {% if execute %}
+            {% set create_temp_sql = "CREATE OR REPLACE TEMPORARY TABLE " ~ pre_relation ~ " AS \n" ~ safe_sql %}
+            {% do run_query(create_temp_sql) %}
+        {% endif %}
+        {% set final_sql = "SELECT * FROM " ~ pre_relation %}
         {{ return(dbt.default__get_create_table_as_sql(temporary, relation, final_sql)) }}
-    {% endif %}
+    {%- else -%}
+        {{ return(dbt.default__get_create_table_as_sql(temporary, relation, sql)) }}
+    {%- endif -%}
 {%- endmacro %}
 
 
@@ -121,16 +109,28 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
    SECTION 4: CONTRACT MISMATCH BYPASS (Silence Python validation)
    ============================================================================ #}
 
-{% macro get_assert_columns_equivalent(ddl_dict) %}
-    {{ return('') }}
+{% macro get_assert_columns_equivalent(sql) %}
+    {%- if _is_built_in_iceberg() -%}
+        {{ return('') }}
+    {%- else -%}
+        {{ return(dbt.default__get_assert_columns_equivalent(sql)) }}
+    {%- endif -%}
 {% endmacro %}
 
-{% macro default__get_assert_columns_equivalent(ddl_dict) %}
-    {{ return('') }}
+{% macro default__get_assert_columns_equivalent(sql) %}
+    {%- if _is_built_in_iceberg() -%}
+        {{ return('') }}
+    {%- else -%}
+        {{ return(dbt.default__get_assert_columns_equivalent(sql)) }}
+    {%- endif -%}
 {% endmacro %}
 
-{% macro snowflake__get_assert_columns_equivalent(ddl_dict) %}
-    {{ return('') }}
+{% macro snowflake__get_assert_columns_equivalent(sql) %}
+    {%- if _is_built_in_iceberg() -%}
+        {{ return('') }}
+    {%- else -%}
+        {{ return(dbt.default__get_assert_columns_equivalent(sql)) }}
+    {%- endif -%}
 {% endmacro %}
 
 
@@ -177,31 +177,31 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
 
     {%- set safe_sql -%}
         SELECT
-        {% for col in final_columns %}
-            {%- set col_name = col.name -%}
-            {%- set col_type = col.type -%}
-            {%- set stripped_type = col_type | replace(" ", "") -%}
-            {%- set is_unspecified_number = ('NUMBER' in col_type or 'DECIMAL' in col_type or 'NUMERIC' in col_type) and ('(' not in col_type or '38,0' in stripped_type) -%}
+            {% for col in final_columns %}
+                {%- set col_name = col.name -%}
+                {%- set col_type = col.type -%}
+                {%- set stripped_type = col_type | replace(" ", "") -%}
+                {%- set is_unspecified_number = ('NUMBER' in col_type or 'DECIMAL' in col_type or 'NUMERIC' in col_type) and ('(' not in col_type or '38,0' in stripped_type) -%}
 
-            {%- if 'TIMESTAMP_LTZ' in col_type -%}
-                CAST("{{ col_name }}" AS TIMESTAMP_LTZ(6)) AS "{{ col_name }}"
-            {%- elif 'TIMESTAMP_NTZ' in col_type -%}
-                CAST("{{ col_name }}" AS TIMESTAMP_NTZ(6)) AS "{{ col_name }}"
-            {%- elif 'TIMESTAMP_TZ' in col_type -%}
-                CAST("{{ col_name }}" AS TIMESTAMP_LTZ(6)) AS "{{ col_name }}"
-            {%- elif 'TIMESTAMP' in col_type -%}
-                CAST("{{ col_name }}" AS TIMESTAMP_NTZ(6)) AS "{{ col_name }}"
-            {%- elif 'VARIANT' in col_type or 'ARRAY' in col_type or 'OBJECT' in col_type -%}
-                CAST(TO_JSON("{{ col_name }}") AS VARCHAR(134217728)) AS "{{ col_name }}"
-            {%- elif 'VARCHAR' in col_type or 'STRING' in col_type -%}
-                CAST("{{ col_name }}" AS VARCHAR(134217728)) AS "{{ col_name }}"
-            {%- elif is_unspecified_number -%}
-                CAST("{{ col_name }}" AS NUMBER(38, 0)) AS "{{ col_name }}"
-            {%- else -%}
-                "{{ col_name }}"
-            {%- endif -%}
-            {%- if not loop.last -%}, {% endif -%}
-        {%- endfor %}
+                {%- if 'TIMESTAMP_LTZ' in col_type -%}
+                    CAST("{{ col_name }}" AS TIMESTAMP_LTZ(6)) AS "{{ col_name }}"
+                {%- elif 'TIMESTAMP_NTZ' in col_type -%}
+                    CAST("{{ col_name }}" AS TIMESTAMP_NTZ(6)) AS "{{ col_name }}"
+                {%- elif 'TIMESTAMP_TZ' in col_type -%}
+                    CAST("{{ col_name }}" AS TIMESTAMP_LTZ(6)) AS "{{ col_name }}"
+                {%- elif 'TIMESTAMP' in col_type -%}
+                    CAST("{{ col_name }}" AS TIMESTAMP_NTZ(6)) AS "{{ col_name }}"
+                {%- elif 'VARIANT' in col_type or 'ARRAY' in col_type or 'OBJECT' in col_type -%}
+                    CAST(TO_JSON("{{ col_name }}") AS VARCHAR(134217728)) AS "{{ col_name }}"
+                {%- elif 'VARCHAR' in col_type or 'STRING' in col_type -%}
+                    CAST("{{ col_name }}" AS VARCHAR(134217728)) AS "{{ col_name }}"
+                {%- elif is_unspecified_number -%}
+                    CAST("{{ col_name }}" AS NUMBER(38, 0)) AS "{{ col_name }}"
+                {%- else -%}
+                    "{{ col_name }}"
+                {%- endif -%}
+                {%- if not loop.last -%}, {% endif -%}
+            {%- endfor %}
         FROM (
             {{ compiled_code }}
         ) AS __iceberg_type_safe_source
