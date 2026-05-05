@@ -177,31 +177,31 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
 
     {%- set safe_sql -%}
         SELECT
-            {% for col in final_columns %}
-                {%- set col_name = col.name -%}
-                {%- set col_type = col.type -%}
-                {%- set stripped_type = col_type | replace(" ", "") -%}
-                {%- set is_unspecified_number = ('NUMBER' in col_type or 'DECIMAL' in col_type or 'NUMERIC' in col_type) and ('(' not in col_type or '38,0' in stripped_type) -%}
+        {% for col in final_columns %}
+            {%- set col_name = col.name -%}
+            {%- set col_type = col.type -%}
+            {%- set stripped_type = col_type | replace(" ", "") -%}
+            {%- set is_unspecified_number = ('NUMBER' in col_type or 'DECIMAL' in col_type or 'NUMERIC' in col_type) and ('(' not in col_type or '38,0' in stripped_type) -%}
 
-                {%- if 'TIMESTAMP_LTZ' in col_type -%}
-                    CAST("{{ col_name }}" AS TIMESTAMP_LTZ(6)) AS "{{ col_name }}"
-                {%- elif 'TIMESTAMP_NTZ' in col_type -%}
-                    CAST("{{ col_name }}" AS TIMESTAMP_NTZ(6)) AS "{{ col_name }}"
-                {%- elif 'TIMESTAMP_TZ' in col_type -%}
-                    CAST("{{ col_name }}" AS TIMESTAMP_LTZ(6)) AS "{{ col_name }}"
-                {%- elif 'TIMESTAMP' in col_type -%}
-                    CAST("{{ col_name }}" AS TIMESTAMP_NTZ(6)) AS "{{ col_name }}"
-                {%- elif 'VARIANT' in col_type or 'ARRAY' in col_type or 'OBJECT' in col_type -%}
-                    CAST(TO_JSON("{{ col_name }}") AS VARCHAR(134217728)) AS "{{ col_name }}"
-                {%- elif 'VARCHAR' in col_type or 'STRING' in col_type -%}
-                    CAST("{{ col_name }}" AS VARCHAR(134217728)) AS "{{ col_name }}"
-                {%- elif is_unspecified_number -%}
-                    CAST("{{ col_name }}" AS NUMBER(38, 0)) AS "{{ col_name }}"
-                {%- else -%}
-                    "{{ col_name }}"
-                {%- endif -%}
-                {%- if not loop.last -%}, {% endif -%}
-            {%- endfor %}
+            {%- if 'TIMESTAMP_LTZ' in col_type -%}
+                CAST("{{ col_name }}" AS TIMESTAMP_LTZ(6)) AS "{{ col_name }}"
+            {%- elif 'TIMESTAMP_NTZ' in col_type -%}
+                CAST("{{ col_name }}" AS TIMESTAMP_NTZ(6)) AS "{{ col_name }}"
+            {%- elif 'TIMESTAMP_TZ' in col_type -%}
+                CAST("{{ col_name }}" AS TIMESTAMP_LTZ(6)) AS "{{ col_name }}"
+            {%- elif 'TIMESTAMP' in col_type -%}
+                CAST("{{ col_name }}" AS TIMESTAMP_NTZ(6)) AS "{{ col_name }}"
+            {%- elif 'VARIANT' in col_type or 'ARRAY' in col_type or 'OBJECT' in col_type -%}
+                CAST(TO_JSON("{{ col_name }}") AS VARCHAR(134217728)) AS "{{ col_name }}"
+            {%- elif 'VARCHAR' in col_type or 'STRING' in col_type -%}
+                CAST("{{ col_name }}" AS VARCHAR(134217728)) AS "{{ col_name }}"
+            {%- elif is_unspecified_number -%}
+                CAST("{{ col_name }}" AS NUMBER(38, 0)) AS "{{ col_name }}"
+            {%- else -%}
+                "{{ col_name }}"
+            {%- endif -%}
+            {%- if not loop.last -%}, {% endif -%}
+        {%- endfor %}
         FROM (
             {{ compiled_code }}
         ) AS __iceberg_type_safe_source
