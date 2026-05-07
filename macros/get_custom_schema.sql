@@ -2,7 +2,7 @@
 
     {%- if custom_schema_name is none or custom_schema_name | trim == '' -%}
 
-        {%- if node.resource_type not in ('model', 'seed', 'snapshot') -%}
+        {%- if node.resource_type not in ('model', 'snapshot') -%}
             {# Hooks, tests, analyses, and other non-deployable node types do not
                require an explicit schema — fall back to target.schema silently. #}
             {{ target.schema }}
