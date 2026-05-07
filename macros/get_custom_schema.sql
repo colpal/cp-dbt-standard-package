@@ -2,23 +2,28 @@
 
     {%- if custom_schema_name is none or custom_schema_name | trim == '' -%}
 
-        {%- if node.package_name == 'dbt_project_evaluator' -%}
+        {%- if node.resource_type not in ('model', 'seed', 'snapshot') -%}
+            {# Hooks, tests, analyses, and other non-deployable node types do not
+               require an explicit schema — fall back to target.schema silently. #}
+            {{ target.schema }}
+
+        {%- elif node.package_name == 'dbt_project_evaluator' -%}
             {# Force dbt_project_evaluator models to UTIL_COMMON.
                The CI Python script injects +schema at build time, but this macro
                guards the compile step which runs before that injection. #}
             {{ 'UTIL_COMMON' }}
 
         {%- else -%}
-            {# All other models — root project or other packages — must declare
-               an explicit +schema in dbt_project.yml. Schemas are centrally
-               provisioned via DPI; there is no valid default to fall back to. #}
+            {# All models, seeds, and snapshots — root project or other packages —
+               must declare an explicit +schema in dbt_project.yml. Schemas are
+               centrally provisioned via DPI; there is no valid default to fall back to. #}
             {{ exceptions.raise_compiler_error(
                 "\n\n[Schema Enforcement] Model '" ~ node.name ~ "'"
-                ~ " (package: " ~ node.package_name ~ ")"
+                ~ " (package: " ~ node.package_name ~ ", type: " ~ node.resource_type ~ ")"
                 ~ " has no +schema configured.\n"
-                ~ "  All models must map to an explicit schema declared in dbt_project.yml.\n"
-                ~ "  Schemas are centrally provisioned — contact the DPI Data Platform team\n"
-                ~ "  if a new schema is needed."
+                ~ "  All models, seeds, and snapshots must map to an explicit schema\n"
+                ~ "  declared in dbt_project.yml. Schemas are centrally provisioned —\n"
+                ~ "  contact the DPI Data Platform team if a new schema is needed."
             ) }}
         {%- endif -%}
 
