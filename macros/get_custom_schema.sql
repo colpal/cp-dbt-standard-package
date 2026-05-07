@@ -7,6 +7,11 @@
                require an explicit schema — fall back to target.schema silently. #}
             {{ target.schema }}
 
+        {%- elif node.config.materialized == 'ephemeral' -%}
+            {# Ephemeral models are inlined at compile time and never written to the
+               warehouse, so they have no schema requirement. Skip enforcement. #}
+            {{ target.schema }}
+
         {%- elif node.package_name == 'dbt_project_evaluator' -%}
             {# Force dbt_project_evaluator models to UTIL_COMMON.
                The CI Python script injects +schema at build time, but this macro
