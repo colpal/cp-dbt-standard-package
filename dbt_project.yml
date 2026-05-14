@@ -16,15 +16,20 @@ model-paths: ["models"]
 macro-paths: ["macros"]
 analysis-paths: ["analyses"]
 test-paths: ["tests"]
-seed-paths: ["seeds"]
+seed-paths: ["test_data"]
 snapshot-paths: ["snapshots"]
 
 target-path: "target"  # directory which will store compiled SQL files
 clean-targets:         # directories to be removed by `dbt clean`
   - "target"
   - "dbt_modules"
+  - "test_modules"
+
+flags:
+  enable_iceberg_materializations: true
 
 models:
+  +enabled: false
   +transient: false
 
 # Automatically reapply Snowflake tags after every dbt run (fixes tag loss on view recreation)
