@@ -77,11 +77,15 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
 
 
 {# ============================================================================
-   SECTION 3: MATERIALIZATION OVERRIDES (Safe Temp Table Routing)
-   Overrides top-level dispatchers so no `dispatch` config is needed in consuming repos.
+   SECTION 3: MATERIALIZATION OVERRIDES (Type-Safe Casting)
+   These are dispatch targets (snowflake__ prefix). Consuming repos MUST add
+   dispatch config to dbt_project.yml for these to be found:
+     dispatch:
+       - macro_namespace: dbt
+         search_order: ['<root_project_name>', 'cp_dbt_standard_package', 'dbt']
    ============================================================================ #}
 
-{% macro create_table_as(temporary, relation, compiled_code, language='sql') -%}
+{% macro snowflake__create_table_as(temporary, relation, compiled_code, language='sql') -%}
     {%- if _is_built_in_iceberg() and language == 'sql' -%}
         {% set safe_sql = iceberg_type_safe_wrap(compiled_code) %}
         {% set pre_relation = relation.incorporate(path={"identifier": relation.identifier ~ "__dbt_pre"}) %}
@@ -90,28 +94,22 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
             {% do run_query(create_temp_sql) %}
         {% endif %}
         {% set final_sql = "SELECT * FROM " ~ pre_relation %}
-        {{ adapter.dispatch('create_table_as', 'dbt')(temporary, relation, final_sql) }}
+        {{ return(dbt.snowflake__create_table_as(temporary, relation, final_sql, language)) }}
     {%- else -%}
-        {%- if language == "sql" -%}
-            {{ adapter.dispatch('create_table_as', 'dbt')(temporary, relation, compiled_code) }}
-        {%- elif language == "python" -%}
-            {{ adapter.dispatch('create_table_as', 'dbt')(temporary, relation, compiled_code, language) }}
-        {%- else -%}
-            {% do exceptions.raise_compiler_error("create_table_as macro didn't get supported language") %}
-        {%- endif -%}
+        {{ return(dbt.snowflake__create_table_as(temporary, relation, compiled_code, language)) }}
     {%- endif -%}
 {%- endmacro %}
 
-{% macro create_view_as(relation, sql) -%}
+{% macro snowflake__create_view_as(relation, sql) -%}
     {%- if _is_built_in_iceberg() -%}
         {% set safe_sql = iceberg_type_safe_wrap(sql) %}
-        {{ adapter.dispatch('create_view_as', 'dbt')(relation, safe_sql) }}
+        {{ return(dbt.snowflake__create_view_as(relation, safe_sql)) }}
     {%- else -%}
-        {{ adapter.dispatch('create_view_as', 'dbt')(relation, sql) }}
+        {{ return(dbt.snowflake__create_view_as(relation, sql)) }}
     {%- endif -%}
 {%- endmacro %}
 
-{% macro get_create_table_as_sql(temporary, relation, sql) -%}
+{% macro snowflake__get_create_table_as_sql(temporary, relation, sql) -%}
     {%- if _is_built_in_iceberg() -%}
         {% set safe_sql = iceberg_type_safe_wrap(sql) %}
         {% set pre_relation = relation.incorporate(path={"identifier": relation.identifier ~ "__dbt_pre"}) %}
@@ -120,9 +118,9 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
             {% do run_query(create_temp_sql) %}
         {% endif %}
         {% set final_sql = "SELECT * FROM " ~ pre_relation %}
-        {{ adapter.dispatch('get_create_table_as_sql', 'dbt')(temporary, relation, final_sql) }}
+        {{ return(dbt.snowflake__get_create_table_as_sql(temporary, relation, final_sql)) }}
     {%- else -%}
-        {{ adapter.dispatch('get_create_table_as_sql', 'dbt')(temporary, relation, sql) }}
+        {{ return(dbt.snowflake__get_create_table_as_sql(temporary, relation, sql)) }}
     {%- endif -%}
 {%- endmacro %}
 
