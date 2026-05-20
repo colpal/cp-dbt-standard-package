@@ -76,7 +76,8 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
 
 {% macro snowflake__create_table_as(temporary, relation, compiled_code, language='sql') -%}
     {% if language == 'sql' %}
-        {% set safe_sql = iceberg_type_safe_wrap(compiled_code) %}
+        {# Explicitly namespace the macro call to the package where it resides #}
+        {% set safe_sql = cp_dbt_standard_package.iceberg_type_safe_wrap(compiled_code) %}
         
         {% set pre_relation = relation.incorporate(path={"identifier": relation.identifier ~ "__dbt_pre"}) %}
         
@@ -93,12 +94,14 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
 {%- endmacro %}
 
 {% macro snowflake__create_view_as(relation, sql) -%}
-    {% set safe_sql = iceberg_type_safe_wrap(sql) %}
+    {# Explicitly namespace the macro call to the package where it resides #}
+    {% set safe_sql = cp_dbt_standard_package.iceberg_type_safe_wrap(sql) %}
     {{ return(dbt.snowflake__create_view_as(relation, safe_sql)) }}
 {%- endmacro %}
 
 {% macro snowflake__get_create_table_as_sql(temporary, relation, sql) -%}
-    {% set safe_sql = iceberg_type_safe_wrap(sql) %}
+    {# Explicitly namespace the macro call to the package where it resides #}
+    {% set safe_sql = cp_dbt_standard_package.iceberg_type_safe_wrap(sql) %}
     
     {% set pre_relation = relation.incorporate(path={"identifier": relation.identifier ~ "__dbt_pre"}) %}
     
