@@ -7,67 +7,15 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
 ===============================================================================
 #}
 
--- Check if model is using built-in Iceberg catalog (safe across dbt 1.9+)
-{% macro _is_built_in_iceberg() %}
-    {{ log("[iceberg_overrides] _is_built_in_iceberg() called for model: " ~ this, info=true) }}
-    {%- set has_method = adapter | attr('build_catalog_relation') is not none -%}
-    {{ log("[iceberg_overrides]   adapter.build_catalog_relation exists: " ~ has_method, info=true) }}
-    {%- if has_method -%}
-        {%- set catalog_relation = adapter.build_catalog_relation(config.model) -%}
-        {{ log("[iceberg_overrides]   catalog_relation: " ~ catalog_relation, info=true) }}
-        {%- if catalog_relation is not none -%}
-            {{ log("[iceberg_overrides]   catalog_type: " ~ catalog_relation.catalog_type, info=true) }}
-            {%- if catalog_relation.catalog_type == 'BUILT_IN' -%}
-                {{ log("[iceberg_overrides]   => ICEBERG BUILT_IN detected, applying type-safe wrapper", info=true) }}
-                {{ return(true) }}
-            {%- endif -%}
-        {%- endif -%}
-    {%- endif -%}
-    {{ log("[iceberg_overrides]   => NOT Iceberg, falling through to native dbt", info=true) }}
-    {{ return(false) }}
-{% endmacro %}
-
-
 {# ============================================================================
-   SECTION 1: THE DDL NUKE (Bypass YAML Contract Injection)
-   ============================================================================ #}
-
-{% macro get_table_columns_and_constraints() %}
-    {%- if _is_built_in_iceberg() -%}
-        {{ return('') }}
-    {%- else -%}
-        {{ return(table_columns_and_constraints()) }}
-    {%- endif -%}
-{% endmacro %}
-
-
-{# ============================================================================
-   SECTION 2: INCREMENTAL STAGING OVERRIDE (Fixes the Array Mismatch)
-   Forces dbt to use temp tables instead of views for incremental staging so 
-   our type-safe wrapper catches arrays and casts them before the MERGE.
+   SECTION 1: INCREMENTAL STAGING OVERRIDE
+   Forces temp tables instead of views so the type-safe wrapper catches
+   arrays and casts them before the MERGE.
    ============================================================================ #}
 
 {% macro dbt_snowflake_get_tmp_relation_type(strategy, unique_key, language) %}
     {{ log("[iceberg_overrides] >>> dbt_snowflake_get_tmp_relation_type OVERRIDE REACHED", info=true) }}
-    {%- if _is_built_in_iceberg() -%}
-        {{ return("table") }}
-    {%- endif -%}
-
-    {%- set tmp_relation_type = config.get('tmp_relation_type') -%}
-
-    {% if language != "sql" %}
-        {{ return("table") }}
-    {% elif tmp_relation_type == "table" %}
-        {{ return("table") }}
-    {% elif tmp_relation_type == "view" %}
-        {{ return("view") }}
-    {% elif strategy in ("default", "merge", "append", "insert_overwrite") %}
-        {{ return("view") }}
-    {% elif strategy in ["delete+insert", "microbatch"] and unique_key is none %}
-        {{ return("view") }}
-    {% else %}
-        {{ return("table") }}
-    {% endif %}
+    {{ return("table") }}
 {% endmacro %}
 
 
@@ -77,7 +25,7 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
 
 {% macro snowflake__create_table_as(temporary, relation, compiled_code, language='sql') -%}
     {{ log("[iceberg_overrides] >>> snowflake__create_table_as OVERRIDE REACHED for: " ~ relation, info=true) }}
-    {%- if _is_built_in_iceberg() and language == 'sql' -%}
+    {%- if language == 'sql' -%}
         {% set safe_sql = iceberg_type_safe_wrap(compiled_code) %}
         {% set pre_relation = relation.incorporate(path={"identifier": relation.identifier ~ "__dbt_pre"}) %}
         {% if execute %}
@@ -92,58 +40,21 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
 {%- endmacro %}
 
 {% macro snowflake__create_view_as(relation, sql) -%}
-    {%- if _is_built_in_iceberg() -%}
-        {% set safe_sql = iceberg_type_safe_wrap(sql) %}
-        {{ return(dbt.snowflake__create_view_as(relation, safe_sql)) }}
-    {%- else -%}
-        {{ return(dbt.snowflake__create_view_as(relation, sql)) }}
-    {%- endif -%}
+    {% set safe_sql = iceberg_type_safe_wrap(sql) %}
+    {{ return(dbt.snowflake__create_view_as(relation, safe_sql)) }}
 {%- endmacro %}
 
 {% macro snowflake__get_create_table_as_sql(temporary, relation, sql) -%}
     {{ log("[iceberg_overrides] >>> snowflake__get_create_table_as_sql OVERRIDE REACHED for: " ~ relation, info=true) }}
-    {%- if _is_built_in_iceberg() -%}
-        {% set safe_sql = iceberg_type_safe_wrap(sql) %}
-        {% set pre_relation = relation.incorporate(path={"identifier": relation.identifier ~ "__dbt_pre"}) %}
-        {% if execute %}
-            {% set create_temp_sql = "CREATE OR REPLACE TEMPORARY TABLE " ~ pre_relation ~ " AS \n" ~ safe_sql %}
-            {% do run_query(create_temp_sql) %}
-        {% endif %}
-        {% set final_sql = "SELECT * FROM " ~ pre_relation %}
-        {{ return(dbt.default__get_create_table_as_sql(temporary, relation, final_sql)) }}
-    {%- else -%}
-        {{ return(dbt.default__get_create_table_as_sql(temporary, relation, sql)) }}
-    {%- endif -%}
+    {% set safe_sql = iceberg_type_safe_wrap(sql) %}
+    {% set pre_relation = relation.incorporate(path={"identifier": relation.identifier ~ "__dbt_pre"}) %}
+    {% if execute %}
+        {% set create_temp_sql = "CREATE OR REPLACE TEMPORARY TABLE " ~ pre_relation ~ " AS \n" ~ safe_sql %}
+        {% do run_query(create_temp_sql) %}
+    {% endif %}
+    {% set final_sql = "SELECT * FROM " ~ pre_relation %}
+    {{ return(dbt.default__get_create_table_as_sql(temporary, relation, final_sql)) }}
 {%- endmacro %}
-
-
-{# ============================================================================
-   SECTION 4: CONTRACT MISMATCH BYPASS (Silence Python validation)
-   ============================================================================ #}
-
-{% macro get_assert_columns_equivalent(sql) %}
-    {%- if _is_built_in_iceberg() -%}
-        {{ return('') }}
-    {%- else -%}
-        {{ return(dbt.default__get_assert_columns_equivalent(sql)) }}
-    {%- endif -%}
-{% endmacro %}
-
-{% macro default__get_assert_columns_equivalent(sql) %}
-    {%- if _is_built_in_iceberg() -%}
-        {{ return('') }}
-    {%- else -%}
-        {{ return(dbt.default__get_assert_columns_equivalent(sql)) }}
-    {%- endif -%}
-{% endmacro %}
-
-{% macro snowflake__get_assert_columns_equivalent(sql) %}
-    {%- if _is_built_in_iceberg() -%}
-        {{ return('') }}
-    {%- else -%}
-        {{ return(dbt.default__get_assert_columns_equivalent(sql)) }}
-    {%- endif -%}
-{% endmacro %}
 
 
 {# ============================================================================
