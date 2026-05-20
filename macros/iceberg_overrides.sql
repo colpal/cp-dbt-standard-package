@@ -9,12 +9,21 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
 
 -- Check if model is using built-in Iceberg catalog (safe across dbt 1.9+)
 {% macro _is_built_in_iceberg() %}
-    {%- if adapter | attr('build_catalog_relation') is not none -%}
+    {{ log("[iceberg_overrides] _is_built_in_iceberg() called for model: " ~ this, info=true) }}
+    {%- set has_method = adapter | attr('build_catalog_relation') is not none -%}
+    {{ log("[iceberg_overrides]   adapter.build_catalog_relation exists: " ~ has_method, info=true) }}
+    {%- if has_method -%}
         {%- set catalog_relation = adapter.build_catalog_relation(config.model) -%}
-        {%- if catalog_relation is not none and catalog_relation.catalog_type == 'BUILT_IN' -%}
-            {{ return(true) }}
+        {{ log("[iceberg_overrides]   catalog_relation: " ~ catalog_relation, info=true) }}
+        {%- if catalog_relation is not none -%}
+            {{ log("[iceberg_overrides]   catalog_type: " ~ catalog_relation.catalog_type, info=true) }}
+            {%- if catalog_relation.catalog_type == 'BUILT_IN' -%}
+                {{ log("[iceberg_overrides]   => ICEBERG BUILT_IN detected, applying type-safe wrapper", info=true) }}
+                {{ return(true) }}
+            {%- endif -%}
         {%- endif -%}
     {%- endif -%}
+    {{ log("[iceberg_overrides]   => NOT Iceberg, falling through to native dbt", info=true) }}
     {{ return(false) }}
 {% endmacro %}
 
@@ -39,6 +48,7 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
    ============================================================================ #}
 
 {% macro dbt_snowflake_get_tmp_relation_type(strategy, unique_key, language) %}
+    {{ log("[iceberg_overrides] >>> dbt_snowflake_get_tmp_relation_type OVERRIDE REACHED", info=true) }}
     {%- if _is_built_in_iceberg() -%}
         {{ return("table") }}
     {%- endif -%}
@@ -66,6 +76,7 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
    ============================================================================ #}
 
 {% macro snowflake__create_table_as(temporary, relation, compiled_code, language='sql') -%}
+    {{ log("[iceberg_overrides] >>> snowflake__create_table_as OVERRIDE REACHED for: " ~ relation, info=true) }}
     {%- if _is_built_in_iceberg() and language == 'sql' -%}
         {% set safe_sql = iceberg_type_safe_wrap(compiled_code) %}
         {% set pre_relation = relation.incorporate(path={"identifier": relation.identifier ~ "__dbt_pre"}) %}
@@ -90,6 +101,7 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
 {%- endmacro %}
 
 {% macro snowflake__get_create_table_as_sql(temporary, relation, sql) -%}
+    {{ log("[iceberg_overrides] >>> snowflake__get_create_table_as_sql OVERRIDE REACHED for: " ~ relation, info=true) }}
     {%- if _is_built_in_iceberg() -%}
         {% set safe_sql = iceberg_type_safe_wrap(sql) %}
         {% set pre_relation = relation.incorporate(path={"identifier": relation.identifier ~ "__dbt_pre"}) %}
