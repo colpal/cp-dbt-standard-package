@@ -30,4 +30,4 @@ models:
 # Automatically reapply Snowflake tags after every dbt run (fixes tag loss on view recreation)
 on-run-end:
   - "{{ cp_dbt_standard_package.tag_models_from_results() }}"
-  - "{{ cp_dbt_standard_package.call_certified_read_proc() }}"
+  - "{{ cp_dbt_standard_package.call_cross_domain_read_proc() }}"
