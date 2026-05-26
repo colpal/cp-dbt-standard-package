@@ -323,3 +323,14 @@
         {% endif %}
     {% endif %}
 {% endmacro %}
+
+{# ============================================================
+   CALL CROSS DOMAIN READ PROCEDURE FOR VIEWS DEPLOYMENT
+   Calls the Snowflake stored procedure to apply cross domain read grants after views are deployed to Consumption DB
+   ============================================================ #}
+{% macro call_cross_domain_views_read_proc() %}
+    {% if execute %}
+        {{ log("Calling GRANT_CROSS_DOMAIN_READ_ACCESS procedure to apply crpss domain read grants", info=true) }}
+        {% do run_query("CALL OPS_CUR.UTIL_COMMON.GRANT_CROSS_DOMAIN_READ_ACCESS()") %}
+    {% endif %}
+{% endmacro %}
