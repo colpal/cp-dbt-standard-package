@@ -332,7 +332,7 @@
     {% if execute %}
         {% set deploy_db = env_var('DEPLOY_DATABASE', target.database | default('')) | upper %}
 
-        {{ log("Calling GRANT_CROSS_DOMAIN_READ_ACCESS procedure to apply crpss domain read grants", info=true) }}
+        {{ log("Calling GRANT_CROSS_DOMAIN_READ_ACCESS procedure to apply cross domain read grants", info=true) }}
         {% do run_query("CALL OPS_CUR.UTIL_COMMON.GRANT_CROSS_DOMAIN_READ_ACCESS('" ~ deploy_db ~ "')") %}
 
     {% endif %}
