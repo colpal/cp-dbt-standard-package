@@ -314,7 +314,12 @@
    ============================================================ #}
 {% macro call_cross_domain_read_proc() %}
     {% if execute %}
-        {{ log("Calling GRANT_CROSS_DOMAIN_READ_ACCESS procedure to apply certified read grants", info=true) }}
-        {% do run_query("CALL OPS_CUR.UTIL_COMMON.GRANT_CROSS_DOMAIN_READ_ACCESS()") %}
+        {% set env_role = env_var('ROLE', '') || upper %}
+        {% set is_deploy_con_role = 'DEPLOY_CON' in env_role %}
+
+        {% if flags.WHICH == "build" and is_deploy_con_role %}
+            {{ log("Calling GRANT_CROSS_DOMAIN_READ_ACCESS procedure to apply crpss domain read grants", info=true) }}
+            {% do run_query("CALL OPS_CUR.UTIL_COMMON.GRANT_CROSS_DOMAIN_READ_ACCESS()") %}
+        {% endif %}
     {% endif %}
 {% endmacro %}
