@@ -506,3 +506,190 @@
 
     {% endif %}
 {% endmacro %}
+
+{# ============================================================
+   CALL CROSS_DOMAIN READ PROCEDURE (on-run-end)
+
+   Zero-latency, domain-scoped alternative to the hourly
+   TAG_BASED_RBAC_CROSS_DOMAIN_PROC task.
+
+   Instead of querying SNOWFLAKE.ACCOUNT_USAGE (latency up to 2h),
+   this macro reads the dbt graph at runtime to build a complete
+   manifest of certified objects, then passes it directly to the
+   stored procedure as a JSON string.
+
+   Domain segregation is enforced: one CALL per target database,
+   so FIN_CON models cannot trigger grants on MD_CON, etc.
+
+   Guard: only fires when the Snowflake session role contains 'DEPLOY'
+   (e.g. EX_DEPLOY_CUR, FIN_DEPLOY_CON). This prevents the procedure
+   from being called during local developer or analyst runs.
+
+   The legacy 0-arg GRANT_CROSS_DOMAIN_READ_ACCESS() procedure continues
+   to run on its hourly Snowflake Task, acting as a safety net for
+   objects tagged directly in Snowflake (outside of dbt runs).
+   ============================================================ #}
+{% macro call_cross_domain_read_proc() %}
+    {% if execute %}
+
+        {# --------------------------------------------------------
+           Role guard: fire for DEPLOY roles (CI/CD) and ELT roles (Airflow).
+           Both can rebuild models (DROP + CREATE) which wipes all Snowflake
+           object-level grants including CROSS_DOMAIN_READ.SELECT. The proc must
+           run on-run-end to reapply grants immediately rather than waiting
+           up to 60 min for the hourly GRANT_CROSS_DOMAIN_READ_ACCESS task.
+
+           ELT safety: execute_as = OWNER on the proc means the actual GRANT
+           DDL runs as the OPS owner — not the ELT role itself. ELT only
+           needs EXECUTE (USAGE) on the procedure.
+           -------------------------------------------------------- #}
+        {% set role_upper = target.role | upper %}
+        {% if 'DEPLOY' in role_upper or 'ELT' in role_upper %}
+
+
+        {# --------------------------------------------------------
+           Step 1: Walk the full graph and collect every certified model,
+           grouped by its resolved target database.
+
+           Always runs — even in PR/PD environments — so CI logs show
+           exactly which domains and objects would have grants applied
+           (dry-run visibility). The actual CALL is gated separately.
+
+           We iterate ALL nodes (not just `results`) so the manifest
+           always contains the complete certified set, including models
+           not rebuilt in this run but whose grants must remain active.
+           -------------------------------------------------------- #}
+        {% set cross_domain_by_db = {} %}
+
+        {% for node_id, node in graph.nodes.items() %}
+            {% if node.resource_type == 'model' %}
+
+                {# Resolve CROSS_DOMAIN from either tag location:
+                   - config.snowflake_tags (set via dbt model config)
+                   - config.meta.snowflake_tags (set via meta block) #}
+                {% set model_tags  = node.config.get('snowflake_tags', {}) %}
+                {% set meta_tags   = node.config.get('meta', {}).get('snowflake_tags', {}) %}
+
+                {% set cross_domain = false %}
+                {% if model_tags.get('CROSS_DOMAIN', '') | upper == 'TRUE' %}
+                    {% set cross_domain = true %}
+                {% elif meta_tags.get('CROSS_DOMAIN', '') | upper == 'TRUE' %}
+                    {% set cross_domain = true %}
+                {% endif %}
+
+                {% if cross_domain %}
+                    {% set db  = node.database | upper %}
+                    {% set mat = node.config.materialized %}
+
+                    {# Map dbt materialization -> Snowflake object type.
+                       incremental / table -> TABLE; view -> VIEW.
+                       ephemeral models produce no physical object -- skip. #}
+                    {% if mat == 'ephemeral' %}
+                        {# nothing to grant -- ephemeral models are inlined #}
+                    {% else %}
+                        {% set obj_type = 'VIEW' if mat == 'view' else 'TABLE' %}
+
+                        {# Collect certified objects from production databases only.
+                           PR/PD databases are ephemeral and never hold prod grants. #}
+                        {% if '_PR_' not in db and not db.endswith('_PD') %}
+
+                            {% if db not in cross_domain_by_db %}
+                                {% do cross_domain_by_db.update({db: []}) %}
+                            {% endif %}
+
+                            {% do cross_domain_by_db[db].append({
+                                'schema': node.schema | upper,
+                                'name':   (node.config.get('alias') or node.name) | upper,
+                                'type':   obj_type
+                            }) %}
+
+                        {% endif %}
+                    {% endif %}
+                {% endif %}
+            {% endif %}
+        {% endfor %}
+
+        {# --------------------------------------------------------
+           Step 2: Call GRANT_CROSS_DOMAIN_READ_ACCESS_BY_DOMAIN once per
+           domain database, passing the scoped JSON manifest.
+
+           In PR / PD environments: log the manifest as a dry run only.
+           No CALL is made -- the hourly task is the safety net for
+           ephemeral environments.
+
+           In production: execute the CALL.
+           -------------------------------------------------------- #}
+        {% set db_upper = target.database | upper %}
+        {% set is_ephemeral = '_PR_' in db_upper or db_upper.endswith('_PD') %}
+
+        {% if cross_domain_by_db | length > 0 %}
+            {% if is_ephemeral %}
+                {# ── DRY RUN: log what production would do, no CALL issued ── #}
+                {{ log(
+                    "[cross_domain_grants] DRY RUN | env: " ~ target.database
+                    ~ " | role: " ~ target.role
+                    ~ " | The following domain(s) would have GRANT_CROSS_DOMAIN_READ_ACCESS_BY_DOMAIN"
+                    ~ " called if this were a production run:",
+                    info=true
+                ) }}
+                {% for domain_db, objects in cross_domain_by_db.items() %}
+                    {{ log(
+                        "[cross_domain_grants]   domain: " ~ domain_db
+                        ~ "  cross domain objects: " ~ objects | length,
+                        info=true
+                    ) }}
+                {% endfor %}
+                {{ log(
+                    "[cross_domain_grants] No grants issued — ephemeral environments do not hold CROSS_DOMAIN_READ grants."
+                    ~ " The hourly TAG_BASED_RBAC_CROSS_DOMAIN_PROC task is the safety net for this environment.",
+                    info=true
+                ) }}
+            {% else %}
+                {# ── PRODUCTION: call the proc once per domain ── #}
+                {% for domain_db, objects in cross_domain_by_db.items() %}
+                    {% set json_payload = tojson(objects) %}
+                    {{ log(
+                        "[cross_domain_grants] CALLING | domain: " ~ domain_db
+                        ~ " | cross domain objects: " ~ objects | length
+                        ~ " | role: " ~ target.role,
+                        info=true
+                    ) }}
+                    {% set call_sql %}
+                        CALL OPS_CUR.UTIL_COMMON.GRANT_CROSS_DOMAIN_READ_ACCESS_BY_DOMAIN(
+                            '{{ domain_db }}',
+                            '{{ json_payload | replace("'", "\'") }}'
+                        )
+                    {% endset %}
+                    {% do run_query(call_sql) %}
+                {% endfor %}
+            {% endif %}
+        {% else %}
+            {% if is_ephemeral %}
+                {{ log(
+                    "[cross_domain_grants] SKIPPED | env: " ~ target.database
+                    ~ " | No cross domain models found targeting production databases."
+                    ~ " In PR/PD runs, all node.database values resolve to ephemeral databases"
+                    ~ " (_PR_*/_PD) and are excluded from grant processing by design.",
+                    info=true
+                ) }}
+            {% else %}
+                {{ log(
+                    "[cross_domain_grants] SKIPPED | No models with CROSS_DOMAIN=TRUE found in the dbt graph."
+                    ~ " Verify that cross domain models have snowflake_tags: {CROSS_DOMAIN: 'TRUE'} in their config.",
+                    info=true
+                ) }}
+            {% endif %}
+        {% endif %} {# cross_domain_by_db length check #}
+
+        {% else %}
+            {{ log(
+                "[cross_domain_grants] SKIPPED | role: '" ~ target.role
+                ~ "' is not a DEPLOY or ELT role — cross domain grant reconciliation only runs"
+                ~ " for deployment and Airflow pipeline roles to prevent analyst runs from"
+                ~ " triggering privilege changes.",
+                info=true
+            ) }}
+        {% endif %} {# DEPLOY / ELT role guard #}
+
+    {% endif %}
+{% endmacro %}
