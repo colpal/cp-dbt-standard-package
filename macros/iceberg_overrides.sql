@@ -102,7 +102,7 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
 
 {% macro snowflake__get_create_view_as_sql(relation, sql) -%}
     {% set safe_sql = cp_dbt_standard_package.iceberg_type_safe_wrap(sql) %}
-    {{ return(dbt.snowflake__get_create_view_as_sql(relation, safe_sql)) }}
+    {{ return(dbt.snowflake__create_view_as(relation, safe_sql)) }}
 {%- endmacro %}
 
 {% macro snowflake__get_create_table_as_sql(temporary, relation, sql) -%}
