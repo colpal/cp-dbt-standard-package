@@ -40,9 +40,36 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
    ============================================================================ #}
 
 {% macro snowflake__get_tmp_relation_type(strategy, unique_key, language) %}
-    {# Forces dbt to use temp tables instead of views for ALL incremental staging 
-       so our type-safe wrapper eagerly catches arrays and casts them before the MERGE. #}
-    {{ return("table") }}
+    {%- set catalog_relation = adapter.build_catalog_relation(config.model) -%}
+    {%- if catalog_relation is not none and catalog_relation.catalog_type == 'BUILT_IN' -%}
+        {{ return("table") }}
+    {%- endif -%}
+
+    {#-- Catch Iceberg models if catalog_relation fails to build --#}
+    {%- if config.get('catalog_name') is not none or config.get('table_format') == 'iceberg' -%}
+        {{ return("table") }}
+    {%- endif -%}
+
+    {#-- For non-Iceberg models, use native logic --#}
+    {%- set tmp_relation_type = config.get('tmp_relation_type') -%}
+
+    {% if snowflake__is_catalog_linked_database(relation=config.model) %}
+        {{ return("table") }}
+    {% endif %}
+
+    {% if language != "sql" %}
+        {{ return("table") }}
+    {% elif tmp_relation_type == "table" %}
+        {{ return("table") }}
+    {% elif tmp_relation_type == "view" %}
+        {{ return("view") }}
+    {% elif strategy in ("default", "merge", "append", "insert_overwrite") %}
+        {{ return("view") }}
+    {% elif strategy in ["delete+insert", "microbatch"] and unique_key is none %}
+        {{ return("view") }}
+    {% else %}
+        {{ return("table") }}
+    {% endif %}
 {% endmacro %}
 
 
