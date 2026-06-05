@@ -239,9 +239,9 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
             {%- elif 'TIME' in col_type -%}
                 CAST("{{ col_name }}" AS TIME(6)) AS "{{ col_name }}"
             {%- elif 'VARIANT' in col_type or 'ARRAY' in col_type or 'OBJECT' in col_type -%}
-                CAST(TO_JSON("{{ col_name }}") AS VARCHAR(134217728)) AS "{{ col_name }}"
+                CAST(TO_JSON("{{ col_name }}") AS VARCHAR(16777216)) AS "{{ col_name }}"
             {%- elif 'VARCHAR' in col_type or 'STRING' in col_type -%}
-                CAST("{{ col_name }}" AS VARCHAR(134217728)) AS "{{ col_name }}"
+                CAST("{{ col_name }}" AS VARCHAR(16777216)) AS "{{ col_name }}"
             {%- elif is_unspecified_number -%}
                 CAST("{{ col_name }}" AS NUMBER(38, 0)) AS "{{ col_name }}"
             {%- else -%}
