@@ -18,7 +18,8 @@
         {% set results_policy_list = [] %}
     {% endif %}
 
-    {%- set alter_cmd = 'ALTER ICEBERG TABLE' if table_name.is_iceberg_format else 'ALTER TABLE IF EXISTS' -%}
+    {%- set is_iceberg = config.get('catalog_name', '') | length > 0 -%}
+    {%- set alter_cmd = 'ALTER ICEBERG TABLE' if is_iceberg else 'ALTER TABLE IF EXISTS' -%}
 
     {% if not results_policy_list %}
         {{ alter_cmd }} {{ table_name }}
