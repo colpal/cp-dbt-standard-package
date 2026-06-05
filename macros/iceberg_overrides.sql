@@ -78,7 +78,7 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
    ============================================================================ #}
 
 {% macro snowflake__create_table_as(temporary, relation, compiled_code, language='sql') -%}
-    {% if language == 'sql' %}
+    {% if language == 'sql' and not temporary %}
         {% set safe_sql = cp_dbt_standard_package.iceberg_type_safe_wrap(compiled_code) %}
         
         {% set pre_relation = relation.incorporate(path={"identifier": relation.identifier ~ "__dbt_pre"}) %}
