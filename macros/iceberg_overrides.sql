@@ -207,7 +207,7 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
             
             {%- set is_unspecified_number = ('NUMBER' in col_type or 'DECIMAL' in col_type or 'NUMERIC' in col_type) and ('(' not in col_type or '38,0' in stripped_type) -%}
             
-            {%- if 'TIMESTAMP' in col_type or 'TIME' in col_type or 'VARIANT' in col_type or 'ARRAY' in col_type or 'OBJECT' in col_type or 'VARCHAR' in col_type or 'STRING' in col_type or is_unspecified_number -%}
+            {%- if 'TIMESTAMP' in col_type or 'TIME' in col_type or 'VARCHAR' in col_type or 'STRING' in col_type or is_unspecified_number -%}
                 {%- do needs_casting.append(col_name) -%}
             {%- endif -%}
             {%- do final_columns.append({'name': col_name, 'type': col_type}) -%}
@@ -243,8 +243,6 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
                 CAST("{{ col_name }}" AS TIMESTAMP_NTZ(6)) AS "{{ col_name }}"
             {%- elif 'TIME' in col_type -%}
                 CAST("{{ col_name }}" AS TIME(6)) AS "{{ col_name }}"
-            {%- elif 'VARIANT' in col_type or 'ARRAY' in col_type or 'OBJECT' in col_type -%}
-                CAST(TO_JSON("{{ col_name }}") AS VARCHAR(16777216)) AS "{{ col_name }}"
             {%- elif 'VARCHAR' in col_type or 'STRING' in col_type -%}
                 CAST("{{ col_name }}" AS VARCHAR(16777216)) AS "{{ col_name }}"
             {%- elif is_unspecified_number -%}
