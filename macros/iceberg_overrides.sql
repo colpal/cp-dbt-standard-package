@@ -229,8 +229,11 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
             {%- set col_type = col.type -%}
             {%- set stripped_type = col_type | replace(" ", "") -%}
             {%- set is_unspecified_number = ('NUMBER' in col_type or 'DECIMAL' in col_type or 'NUMERIC' in col_type) and ('(' not in col_type or '38,0' in stripped_type) -%}
+            {%- set has_colon = ':' in col_name -%}
 
-            {%- if 'TIMESTAMP_LTZ' in col_type -%}
+            {%- if has_colon -%}
+                "{{ col_name }}"
+            {%- elif 'TIMESTAMP_LTZ' in col_type -%}
                 CAST("{{ col_name }}" AS TIMESTAMP_LTZ(6)) AS "{{ col_name }}"
             {%- elif 'TIMESTAMP_NTZ' in col_type -%}
                 CAST("{{ col_name }}" AS TIMESTAMP_NTZ(6)) AS "{{ col_name }}"
