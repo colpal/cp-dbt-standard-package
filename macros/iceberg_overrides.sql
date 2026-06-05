@@ -188,7 +188,9 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
 
     {% call statement('create_type_introspection_view') %}
         {{ config.get('sql_header', '') }}
-        CREATE OR REPLACE VIEW {{ temp_view }} AS ( {{ compiled_code }} )
+        CREATE OR REPLACE VIEW {{ temp_view }} AS (
+{{ compiled_code }}
+)
     {% endcall %}
 
     {%- set describe_sql = "DESCRIBE VIEW " ~ temp_view -%}
