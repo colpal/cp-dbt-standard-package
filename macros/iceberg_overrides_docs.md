@@ -102,11 +102,11 @@ Snowflake Native Iceberg (built-in catalog) maps Iceberg's `timestamptz` type to
 
 ---
 
-### Why is `VARIANT` not cast but `ARRAY` and `OBJECT` are?
+### Why are `VARIANT`, `ARRAY`, and `OBJECT` cast to `VARCHAR`?
 
-Snowflake Native Iceberg supports `VARIANT` as a stored column type. Casting it to `VARCHAR` via `TO_JSON()` would break downstream semi-structured access patterns like `column:field::TYPE`.
+Snowflake Native Iceberg (built-in catalog) does **not** support `VARIANT`, `ARRAY`, or `OBJECT` as stored column types. All three must be serialized to JSON string (`VARCHAR(16777216)`) via `TO_JSON()` for the `CREATE ICEBERG TABLE` DDL to succeed.
 
-`ARRAY` and `OBJECT` are **not** supported as Iceberg stored column types. They must be serialized to JSON string (`VARCHAR`) for the `CREATE ICEBERG TABLE` DDL to succeed.
+> **Important downstream implication**: any model that reads from an Iceberg table and uses Snowflake's semi-structured path accessor syntax (e.g. `col:field::TYPE`) on such a column will fail at query time because the column is stored as `VARCHAR`. Those models must use `PARSE_JSON(col):field::TYPE` instead.
 
 ---
 
@@ -144,8 +144,7 @@ A short-lived `TEMPORARY TABLE` created in the same session as the dbt run, name
 
 | Edge case | Symptom without fix | Mitigation |
 |---|---|---|
-| `ARRAY` / `OBJECT` output columns | `Unsupported data type 'ARRAY' for iceberg tables` | Cast to `TO_JSON(...) AS VARCHAR(16777216)` |
-| `VARIANT` output columns | `Invalid argument types for function 'GET'` on downstream `:field` access | Skip cast entirely — VARIANT is Iceberg-native |
+| `VARIANT` / `ARRAY` / `OBJECT` output columns | `Unsupported data type 'VARIANT'/'ARRAY' for iceberg tables` | Cast all three to `TO_JSON(...) AS VARCHAR(16777216)` |
 | `TIMESTAMP_TZ` output columns | DDL rejected by Iceberg type system | Cast to `TIMESTAMP_LTZ(6)` |
 | Unqualified `TIMESTAMP` columns | Ambiguous precision may be rejected | Normalize to `TIMESTAMP_NTZ(6)` |
 | `VARCHAR` exceeding 16 MB | `unexpected '<EOF>'` compilation error | Cap cast at `VARCHAR(16777216)` |
