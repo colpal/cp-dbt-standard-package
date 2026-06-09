@@ -18,18 +18,21 @@
         {% set results_policy_list = [] %}
     {% endif %}
 
+    {%- set is_iceberg = config.get('catalog_name', '') | length > 0 -%}
+    {%- set alter_cmd = 'ALTER ICEBERG TABLE' if is_iceberg else 'ALTER TABLE IF EXISTS' -%}
+
     {% if not results_policy_list %}
-        ALTER TABLE IF EXISTS {{ table_name }} 
-            ADD ROW ACCESS POLICY {{ policy_name }} 
+        {{ alter_cmd }} {{ table_name }}
+            ADD ROW ACCESS POLICY {{ policy_name }}
             ON {{ policy_col_list }};
     {% else %}
         {% set full_result_name = results_db_list[0] ~ '.' ~ results_schema_list[0] ~ '.' ~ results_policy_list[0] %}
         {% if not full_result_name == policy_name %}
-            ALTER TABLE IF EXISTS {{ table_name }}
+            {{ alter_cmd }} {{ table_name }}
                 DROP ROW ACCESS POLICY {{ full_result_name }};
-            ALTER TABLE IF EXISTS {{ table_name }} 
-                ADD ROW ACCESS POLICY {{ policy_name }} 
+            {{ alter_cmd }} {{ table_name }}
+                ADD ROW ACCESS POLICY {{ policy_name }}
                 ON {{ policy_col_list }};
         {% endif %}
-    {% endif %} 
+    {% endif %}
 {% endmacro %}
