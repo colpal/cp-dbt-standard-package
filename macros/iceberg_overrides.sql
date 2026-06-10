@@ -173,6 +173,52 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
 
 
 {# ============================================================================
+   SECTION 3B: MERGE OVERRIDE (Wrap staging source to cast unsupported types)
+   ============================================================================ #}
+
+{% macro snowflake__get_merge_sql(target, source, unique_key, dest_columns, incremental_predicates=none) %}
+{%- set is_iceberg = (
+    config.get('catalog_name') is not none
+    or config.get('table_format', '') | lower == 'iceberg'
+) -%}
+
+{%- if is_iceberg and execute -%}
+    {#-- Describe the staging relation to find columns needing casts --#}
+    {%- set describe_sql = "DESCRIBE TABLE " ~ source -%}
+    {%- set results = run_query(describe_sql) -%}
+
+    {%- set has_unsupported = [] -%}
+    {%- set wrapped_cols = [] -%}
+
+    {%- for row in results.rows -%}
+        {%- set col_name = row['name'] -%}
+        {%- set col_type = row['type'] | string | upper -%}
+
+        {%- if 'ARRAY' in col_type or 'OBJECT' in col_type or 'VARIANT' in col_type -%}
+            {%- do has_unsupported.append(col_name) -%}
+            {%- do wrapped_cols.append('CAST(TO_JSON("' ~ col_name ~ '") AS VARCHAR(16777216)) AS "' ~ col_name ~ '"') -%}
+        {%- else -%}
+            {%- do wrapped_cols.append('"' ~ col_name ~ '"') -%}
+        {%- endif -%}
+    {%- endfor -%}
+
+    {%- if has_unsupported | length > 0 -%}
+        {#-- Create a temp view wrapping the staging relation with proper casts --#}
+        {%- set safe_source = source.incorporate(path={"identifier": source.identifier ~ "__safe"}) -%}
+        {%- set create_safe_sql = "CREATE OR REPLACE TEMPORARY VIEW " ~ safe_source ~ " AS SELECT " ~ wrapped_cols | join(", ") ~ " FROM " ~ source -%}
+        {%- do run_query(create_safe_sql) -%}
+
+        {{ return(dbt.get_merge_sql(target, safe_source, unique_key, dest_columns, incremental_predicates)) }}
+    {%- else -%}
+        {{ return(dbt.get_merge_sql(target, source, unique_key, dest_columns, incremental_predicates)) }}
+    {%- endif -%}
+{%- else -%}
+    {{ return(dbt.get_merge_sql(target, source, unique_key, dest_columns, incremental_predicates)) }}
+{%- endif -%}
+{% endmacro %}
+
+
+{# ============================================================================
    SECTION 4: CONTRACT MISMATCH BYPASS (Silence Python validation)
    ============================================================================ #}
 
