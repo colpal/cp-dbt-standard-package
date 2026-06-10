@@ -208,12 +208,12 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
         {%- set create_safe_sql = "CREATE OR REPLACE TEMPORARY VIEW " ~ safe_source ~ " AS SELECT " ~ wrapped_cols | join(", ") ~ " FROM " ~ source -%}
         {%- do run_query(create_safe_sql) -%}
 
-        {{ return(dbt.get_merge_sql(target, safe_source, unique_key, dest_columns, incremental_predicates)) }}
+        {{ return(dbt.snowflake__get_merge_sql(target, safe_source, unique_key, dest_columns, incremental_predicates)) }}
     {%- else -%}
-        {{ return(dbt.get_merge_sql(target, source, unique_key, dest_columns, incremental_predicates)) }}
+        {{ return(dbt.snowflake__get_merge_sql(target, source, unique_key, dest_columns, incremental_predicates)) }}
     {%- endif -%}
 {%- else -%}
-    {{ return(dbt.get_merge_sql(target, source, unique_key, dest_columns, incremental_predicates)) }}
+    {{ return(dbt.snowflake__get_merge_sql(target, source, unique_key, dest_columns, incremental_predicates)) }}
 {%- endif -%}
 {% endmacro %}
 
