@@ -7,7 +7,7 @@
     ) %}
     
     {% set airflow_run = env_var('AIRFLOW_RUN', 'true') %}
-    {% set where_statement = "source_uri = '" ~ model.name ~ "' and database_name = '" ~ model.database ~ "' and airflow = '" ~ airflow_run ~ "'" %}
+    {% set where_statement = "source_uri = '" ~ model.name ~ "' and airflow = '" ~ airflow_run ~ "'" %}
 
     {% set warehouse = dbt_utils.get_column_values(
         relation, 
@@ -21,7 +21,6 @@
     {% do merged_extra.update({
         'invocation_id': invocation_id, 
         'model': model.name, 
-        'database': model.database,
         'is_airflow_run': airflow_run
     }) %}
     
