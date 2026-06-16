@@ -219,6 +219,28 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
 
 
 {# ============================================================================
+   SECTION 3C: ALTER COLUMN TYPE BYPASS (Prevent Iceberg type alteration)
+   ============================================================================ #}
+
+{% macro snowflake__alter_column_type(relation, column_name, new_column_type) %}
+{%- set is_iceberg = (
+    config.get('catalog_name') is not none
+    or config.get('table_format', '') | lower == 'iceberg'
+) -%}
+{%- set upper_type = new_column_type | upper -%}
+{%- set is_unsupported_type = ('VARIANT' in upper_type or 'ARRAY' in upper_type or 'OBJECT' in upper_type) -%}
+{%- if is_iceberg and is_unsupported_type -%}
+    {#-- Skip ALTER only for Iceberg-unsupported types (VARIANT/ARRAY/OBJECT).
+         These are phantom mismatches from the staging view's native types;
+         the actual casting is handled at MERGE time by the get_merge_sql override. --#}
+    {{ log("Iceberg: skipping ALTER COLUMN TYPE for " ~ column_name ~ " to " ~ new_column_type ~ " (unsupported Iceberg type)", info=True) }}
+{%- else -%}
+    {{ return(dbt.snowflake__alter_column_type(relation, column_name, new_column_type)) }}
+{%- endif -%}
+{% endmacro %}
+
+
+{# ============================================================================
    SECTION 4: CONTRACT MISMATCH BYPASS (Silence Python validation)
    ============================================================================ #}
 
