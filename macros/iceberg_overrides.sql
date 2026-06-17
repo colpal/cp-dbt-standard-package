@@ -11,19 +11,19 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
    ============================================================================ #}
 
 {% macro get_table_columns_and_constraints() %}
-            {{ return('') }}
+    {{ return('') }}
 {% endmacro %}
 
 {% macro default__get_table_columns_and_constraints() %}
-            {{ return('') }}
+    {{ return('') }}
 {% endmacro %}
 
 {% macro snowflake__get_table_columns_and_constraints() %}
-            {{ return('') }}
+    {{ return('') }}
 {% endmacro %}
 
 {% macro render_raw_columns_constraints(raw_columns) %}
-            {{ return('') }}
+    {{ return('') }}
 {% endmacro %}
 
 {% macro default__render_raw_columns_constraints(raw_columns) %}
@@ -31,7 +31,7 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
 {% endmacro %}
 
 {% macro snowflake__render_raw_columns_constraints(raw_columns) %}
-            {{ return('') }}
+    {{ return('') }}
 {% endmacro %}
 
 
@@ -40,7 +40,6 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
    ============================================================================ #}
 
 {% macro snowflake__get_tmp_relation_type(strategy, unique_key, language) %}
-            {{ log("DEBUG: catalog_name=" ~ config.get('catalog_name') ~ " | catalog_relation=" ~ catalog_relation ~ " | strategy=" ~ strategy, info=True) }}
 {%- set catalog_relation = adapter.build_catalog_relation(config.model) -%}
 {%- if catalog_relation is not none and catalog_relation.catalog_type == 'BUILT_IN' -%}
             {{ return("table") }}
