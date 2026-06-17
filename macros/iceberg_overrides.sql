@@ -106,8 +106,13 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
 {%- endmacro %}
 
 {% macro snowflake__create_view_as(relation, sql) -%}
-{% set safe_sql = cp_dbt_standard_package.iceberg_type_safe_wrap(sql) %}
-{{ return(dbt.snowflake__create_view_as(relation, safe_sql)) }}
+{%- set is_iceberg = (config.get('catalog_name') is not none or config.get('table_format', '') | lower == 'iceberg') -%}
+{% if is_iceberg %}
+  {% set safe_sql = cp_dbt_standard_package.iceberg_type_safe_wrap(sql) %}
+  {{ return(dbt.snowflake__create_view_as(relation, safe_sql)) }}
+{% else %}
+  {{ return(dbt.snowflake__create_view_as(relation, sql)) }}
+{% endif %}
 {%- endmacro %}
 
 {% macro snowflake__get_create_view_as_sql(relation, sql) -%}
