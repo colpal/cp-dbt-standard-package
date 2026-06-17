@@ -83,7 +83,7 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
         or config.get('table_format', '') | lower == 'iceberg'
     ) -%}
 
-{% if language == 'sql' and (not temporary or is_iceberg) %}
+{% if language == 'sql' and is_iceberg) %}
 {% set safe_sql = cp_dbt_standard_package.iceberg_type_safe_wrap(compiled_code) %}
         
 {%- if not temporary -%}
