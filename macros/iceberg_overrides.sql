@@ -40,9 +40,10 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
    ============================================================================ #}
 
 {% macro snowflake__get_tmp_relation_type(strategy, unique_key, language) %}
+            {{ log("DEBUG: catalog_name=" ~ config.get('catalog_name') ~ " | catalog_relation=" ~ catalog_relation ~ " | strategy=" ~ strategy, info=True) }}
 {%- set catalog_relation = adapter.build_catalog_relation(config.model) -%}
 {%- if catalog_relation is not none and catalog_relation.catalog_type == 'BUILT_IN' -%}
-{{ return("table") }}
+            {{ return("table") }}
 {%- endif -%}
 
 {#-- Catch Iceberg models if catalog_relation fails to build --#}
