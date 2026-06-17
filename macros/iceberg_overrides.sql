@@ -11,27 +11,27 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
    ============================================================================ #}
 
 {% macro get_table_columns_and_constraints() %}
-{{ return('') }}
+            {{ return('') }}
 {% endmacro %}
 
 {% macro default__get_table_columns_and_constraints() %}
-{{ return('') }}
+            {{ return('') }}
 {% endmacro %}
 
 {% macro snowflake__get_table_columns_and_constraints() %}
-{{ return('') }}
+            {{ return('') }}
 {% endmacro %}
 
 {% macro render_raw_columns_constraints(raw_columns) %}
-{{ return('') }}
+            {{ return('') }}
 {% endmacro %}
 
 {% macro default__render_raw_columns_constraints(raw_columns) %}
-{{ return('') }}
+            {{ return('') }}
 {% endmacro %}
 
 {% macro snowflake__render_raw_columns_constraints(raw_columns) %}
-{{ return('') }}
+            {{ return('') }}
 {% endmacro %}
 
 
