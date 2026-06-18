@@ -1,5 +1,5 @@
 {% macro set_query_tag(extra = {}) -%}
-    {% do run_query('use warehouse CP_DBT_XSMALL_WH_V2') %} # enabling recommendation query to run on xsmall warehouse 
+    {% do run_query('use warehouse CP_DBT_XSMALL_WH_V2') %} 
     {% set relation = api.Relation.create(
         database='OPS_CUR', 
         schema='WH_RECOMMENDATIONS', 
@@ -7,7 +7,7 @@
     ) %}
     
     {% set airflow_run = env_var('AIRFLOW_RUN', 'true') %}
-    {% set where_statement = "source_uri = '" ~ model.name ~ "' and airflow = '" ~ airflow_run ~ "'" %}
+    {% set where_statement = "source_uri = '" ~ model.name ~ "' and database_name = '" ~ model.database ~ "' and airflow = '" ~ airflow_run ~ "'" %}
 
     {% set warehouse = dbt_utils.get_column_values(
         relation, 
@@ -20,7 +20,8 @@
     {% set merged_extra = extra.copy() %}
     {% do merged_extra.update({
         'invocation_id': invocation_id, 
-        'model': model.name, 
+        'model': model.name,
+        'database': model.database,
         'is_airflow_run': airflow_run
     }) %}
     
