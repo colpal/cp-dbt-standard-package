@@ -101,8 +101,8 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
             {{ return(dbt.snowflake__create_table_as(temporary, relation, safe_sql, language)) }}
         {%- endif -%}
     {% else %}
-{{ return(dbt.snowflake__create_table_as(temporary, relation, compiled_code, language)) }}
-{% endif %}
+        {{ return(dbt.snowflake__create_table_as(temporary, relation, compiled_code, language)) }}
+    {% endif %}
 {%- endmacro %}
 
 {% macro snowflake__create_view_as(relation, sql) -%}
@@ -116,12 +116,12 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
 {%- endmacro %}
 
 {% macro snowflake__get_create_view_as_sql(relation, sql) -%}
-{% set safe_sql = cp_dbt_standard_package.iceberg_type_safe_wrap(sql) %}
-{{ return(dbt.snowflake__create_view_as(relation, safe_sql)) }}
+    {% set safe_sql = cp_dbt_standard_package.iceberg_type_safe_wrap(sql) %}
+    {{ return(dbt.snowflake__create_view_as(relation, safe_sql)) }}
 {%- endmacro %}
 
 {% macro snowflake__get_create_table_as_sql(temporary, relation, sql) -%}
-{% set safe_sql = cp_dbt_standard_package.iceberg_type_safe_wrap(sql) %}
+    {% set safe_sql = cp_dbt_standard_package.iceberg_type_safe_wrap(sql) %}
     
 {% set pre_relation = relation.incorporate(path={"identifier": relation.identifier ~ "__dbt_pre"}) %}
     
@@ -140,14 +140,14 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
 {%- endmacro %}
 
 {% macro snowflake__get_create_iceberg_table_as_sql(temporary, relation, sql) -%}
-{% set safe_sql = cp_dbt_standard_package.iceberg_type_safe_wrap(sql) %}
+    {% set safe_sql = cp_dbt_standard_package.iceberg_type_safe_wrap(sql) %}
     
 {% set pre_relation = relation.incorporate(path={"identifier": relation.identifier ~ "__dbt_pre"}) %}
     
-{% if execute %}
-{% set create_temp_sql = "CREATE OR REPLACE TEMPORARY TABLE " ~ pre_relation ~ " AS \n" ~ safe_sql %}
-{% do run_query(create_temp_sql) %}
-{% endif %}
+    {% if execute %}
+        {% set create_temp_sql = "CREATE OR REPLACE TEMPORARY TABLE " ~ pre_relation ~ " AS \n" ~ safe_sql %}
+        {% do run_query(create_temp_sql) %}
+    {% endif %}
     
 {% set final_sql = "SELECT * FROM " ~ pre_relation %}
     
