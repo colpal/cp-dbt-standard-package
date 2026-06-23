@@ -3,8 +3,6 @@
 MACRO FILE: iceberg_overrides.sql
 PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to 
             enforce Apache Iceberg type safety and bypass strict contract errors.
-            Updated: final Iceberg tables are now created directly from
-            type-safe SQL (no __dbt_pre temp table hop) for better performance.
 ===============================================================================
 #}
 
@@ -79,7 +77,7 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
    SECTION 3: MATERIALIZATION OVERRIDES (Safe Temp Table Routing)
    ============================================================================ #}
 
-{# NOTE: Final tables are created directly from safe_sql (no __dbt_pre) #}
+{# NOTE: Final tables are created directly from safe_sql #}
 
 {% macro snowflake__create_table_as(temporary, relation, compiled_code, language='sql') -%}
     {%- set is_iceberg = (
@@ -213,15 +211,15 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
    ============================================================================ #}
 
 {% macro get_assert_columns_equivalent(ddl_dict) %}
-{{ return('') }}
+    {{ return('') }}
 {% endmacro %}
 
 {% macro default__get_assert_columns_equivalent(ddl_dict) %}
-{{ return('') }}
+    {{ return('') }}
 {% endmacro %}
 
 {% macro snowflake__get_assert_columns_equivalent(ddl_dict) %}
-{{ return('') }}
+    {{ return('') }}
 {% endmacro %}
 
 
@@ -230,22 +228,22 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
    ============================================================================ #}
 
 {% macro iceberg_type_safe_wrap(compiled_code) %}
-{%- set temp_view = make_temp_relation(this).incorporate(type='view') -%}
+    {%- set temp_view = make_temp_relation(this).incorporate(type='view') -%}
 
-{% call statement('create_type_introspection_view') %}
-{{ config.get('sql_header', '') }}
+    {% call statement('create_type_introspection_view') %}
+        {{ config.get('sql_header', '') }}
         CREATE OR REPLACE VIEW {{ temp_view }} AS (
-{{ compiled_code }}
-)
+        {{ compiled_code }}
+        )
     {% endcall %}
 
-{%- set describe_sql = "DESCRIBE VIEW " ~ temp_view -%}
-{%- set results = run_query(describe_sql) -%}
+    {%- set describe_sql = "DESCRIBE VIEW " ~ temp_view -%}
+    {%- set results = run_query(describe_sql) -%}
 
-{%- set needs_casting = [] -%}
-{%- set final_columns = [] -%}
+    {%- set needs_casting = [] -%}
+    {%- set final_columns = [] -%}
 
-{%- if execute -%}
+    {%- if execute -%}
         {%- for row in results.rows -%}
             {%- set col_name = row['name'] -%}
             {%- set col_type = row['type'] | string | upper -%}
@@ -260,24 +258,24 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
         {%- endfor -%}
     {%- endif -%}
 
-{% call statement('drop_type_introspection_view') %}
+    {% call statement('drop_type_introspection_view') %}
         DROP VIEW IF EXISTS {{ temp_view }}
-{% endcall %}
+    {% endcall %}
 
-{%- if needs_casting | length == 0 -%}
+    {%- if needs_casting | length == 0 -%}
         {{ return(compiled_code) }}
     {%- endif -%}
 
-{%- set safe_sql -%}
+    {%- set safe_sql -%}
         SELECT
         {% for col in final_columns %}
-{%- set col_name = col.name -%}
-{%- set col_type = col.type -%}
-{%- set stripped_type = col_type | replace(" ", "") -%}
-{%- set is_unspecified_number = ('NUMBER' in col_type or 'DECIMAL' in col_type or 'NUMERIC' in col_type) and ('(' not in col_type or '38,0' in stripped_type) -%}
-{%- set has_colon = ':' in col_name -%}
+            {%- set col_name = col.name -%}
+            {%- set col_type = col.type -%}
+            {%- set stripped_type = col_type | replace(" ", "") -%}
+            {%- set is_unspecified_number = ('NUMBER' in col_type or 'DECIMAL' in col_type or 'NUMERIC' in col_type) and ('(' not in col_type or '38,0' in stripped_type) -%}
+            {%- set has_colon = ':' in col_name -%}
 
-{%- if has_colon -%}
+            {%- if has_colon -%}
                 "{{ col_name }}"
             {%- elif 'TIMESTAMP_LTZ' in col_type -%}
                 CAST("{{ col_name }}" AS TIMESTAMP_LTZ(6)) AS "{{ col_name }}"
@@ -300,14 +298,14 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
             {%- elif is_unspecified_number -%}
                 CAST("{{ col_name }}" AS NUMBER(38, 0)) AS "{{ col_name }}"
             {%- else -%}
-"{{ col_name }}"
-{%- endif -%}
-{%- if not loop.last -%}, {% endif -%}
-{%- endfor %}
+                "{{ col_name }}"
+            {%- endif -%}
+            {%- if not loop.last -%}, {% endif -%}
+        {%- endfor %}
         FROM (
             {{ compiled_code }}
         ) AS __iceberg_type_safe_source
-{%- endset -%}
+    {%- endset -%}
 
-{{ return(safe_sql) }}
+    {{ return(safe_sql) }}
 {% endmacro %}
