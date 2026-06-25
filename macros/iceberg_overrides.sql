@@ -41,9 +41,9 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
 
 {% macro snowflake__get_tmp_relation_type(strategy, unique_key, language) %}
     {%- set catalog_relation = adapter.build_catalog_relation(config.model) -%}
-    {%- if catalog_relation is not none and catalog_relation.catalog_type == 'BUILT_IN' -%}
-        {{ return("table") }}
-    {%- endif -%}
+        {%- if catalog_relation is not none and catalog_relation.catalog_type == 'BUILT_IN' -%}
+            {{ return("table") }}
+        {%- endif -%}
 
     {#-- Catch Iceberg models if catalog_relation fails to build --#}
     {%- if config.get('catalog_name') is not none or config.get('table_format') == 'iceberg' -%}
@@ -77,27 +77,30 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
    SECTION 3: MATERIALIZATION OVERRIDES (Safe Temp Table Routing)
    ============================================================================ #}
 
+{# NOTE: Final tables are created directly from safe_sql #}
+
 {% macro snowflake__create_table_as(temporary, relation, compiled_code, language='sql') -%}
-    {% if language == 'sql' and not temporary %}
+    {%- set is_iceberg = (
+        config.get('catalog_name') is not none
+        or config.get('table_format', '') | lower == 'iceberg'
+    ) -%}
+
+    {% if language == 'sql' and is_iceberg %}
         {% set safe_sql = cp_dbt_standard_package.iceberg_type_safe_wrap(compiled_code) %}
-        
-        {% set pre_relation = relation.incorporate(path={"identifier": relation.identifier ~ "__dbt_pre"}) %}
-        
-        {% if execute %}
-            {% set create_temp_sql = "CREATE OR REPLACE TEMPORARY TABLE " ~ pre_relation ~ " AS \n" ~ safe_sql %}
-            {% do run_query(create_temp_sql) %}
-        {% endif %}
-        
-        {% set final_sql = "SELECT * FROM " ~ pre_relation %}
-        {{ return(dbt.snowflake__create_table_as(temporary, relation, final_sql, language)) }}
+        {{ return(dbt.snowflake__create_table_as(temporary, relation, safe_sql, language)) }}
     {% else %}
         {{ return(dbt.snowflake__create_table_as(temporary, relation, compiled_code, language)) }}
     {% endif %}
 {%- endmacro %}
 
 {% macro snowflake__create_view_as(relation, sql) -%}
-    {% set safe_sql = cp_dbt_standard_package.iceberg_type_safe_wrap(sql) %}
-    {{ return(dbt.snowflake__create_view_as(relation, safe_sql)) }}
+    {%- set is_iceberg = (config.get('catalog_name') is not none or config.get('table_format', '') | lower == 'iceberg') -%}
+    {% if is_iceberg %}
+      {% set safe_sql = cp_dbt_standard_package.iceberg_type_safe_wrap(sql) %}
+      {{ return(dbt.snowflake__create_view_as(relation, safe_sql)) }}
+    {% else %}
+      {{ return(dbt.snowflake__create_view_as(relation, sql)) }}
+    {% endif %}
 {%- endmacro %}
 
 {% macro snowflake__get_create_view_as_sql(relation, sql) -%}
@@ -107,59 +110,100 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
 
 {% macro snowflake__get_create_table_as_sql(temporary, relation, sql) -%}
     {% set safe_sql = cp_dbt_standard_package.iceberg_type_safe_wrap(sql) %}
-    
-    {% set pre_relation = relation.incorporate(path={"identifier": relation.identifier ~ "__dbt_pre"}) %}
-    
-    {% if execute %}
-        {% set create_temp_sql = "CREATE OR REPLACE TEMPORARY TABLE " ~ pre_relation ~ " AS \n" ~ safe_sql %}
-        {% do run_query(create_temp_sql) %}
-    {% endif %}
-    
-    {% set final_sql = "SELECT * FROM " ~ pre_relation %}
-    
-    {% if 'snowflake__get_create_table_as_sql' in dbt %}
-        {{ return(dbt.snowflake__get_create_table_as_sql(temporary, relation, final_sql)) }}
-    {% else %}
-        {{ return(dbt.default__get_create_table_as_sql(temporary, relation, final_sql)) }}
-    {% endif %}
+
+    {%- if 'snowflake__get_create_table_as_sql' in dbt -%}
+        {{ return(dbt.snowflake__get_create_table_as_sql(temporary, relation, safe_sql)) }}
+    {%- else -%}
+        {{ return(dbt.default__get_create_table_as_sql(temporary, relation, safe_sql)) }}
+    {%- endif -%}
 {%- endmacro %}
 
 {% macro snowflake__get_create_iceberg_table_as_sql(temporary, relation, sql) -%}
     {% set safe_sql = cp_dbt_standard_package.iceberg_type_safe_wrap(sql) %}
-    
-    {% set pre_relation = relation.incorporate(path={"identifier": relation.identifier ~ "__dbt_pre"}) %}
-    
-    {% if execute %}
-        {% set create_temp_sql = "CREATE OR REPLACE TEMPORARY TABLE " ~ pre_relation ~ " AS \n" ~ safe_sql %}
-        {% do run_query(create_temp_sql) %}
-    {% endif %}
-    
-    {% set final_sql = "SELECT * FROM " ~ pre_relation %}
-    
-    {% if 'snowflake__get_create_iceberg_table_as_sql' in dbt %}
-        {{ return(dbt.snowflake__get_create_iceberg_table_as_sql(temporary, relation, final_sql)) }}
-    {% else %}
-        {{ return(dbt.default__get_create_table_as_sql(temporary, relation, final_sql)) }}
-    {% endif %}
+
+    {%- if 'snowflake__get_create_iceberg_table_as_sql' in dbt -%}
+        {{ return(dbt.snowflake__get_create_iceberg_table_as_sql(temporary, relation, safe_sql)) }}
+    {%- else -%}
+        {{ return(dbt.default__get_create_table_as_sql(temporary, relation, safe_sql)) }}
+    {%- endif -%}
 {%- endmacro %}
 
 {% macro snowflake__create_iceberg_table_as(temporary, relation, compiled_code, language='sql') -%}
     {% if language == 'sql' %}
         {% set safe_sql = cp_dbt_standard_package.iceberg_type_safe_wrap(compiled_code) %}
-        
-        {% set pre_relation = relation.incorporate(path={"identifier": relation.identifier ~ "__dbt_pre"}) %}
-        
-        {% if execute %}
-            {% set create_temp_sql = "CREATE OR REPLACE TEMPORARY TABLE " ~ pre_relation ~ " AS \n" ~ safe_sql %}
-            {% do run_query(create_temp_sql) %}
-        {% endif %}
-        
-        {% set final_sql = "SELECT * FROM " ~ pre_relation %}
-        {{ return(dbt.snowflake__create_iceberg_table_as(temporary, relation, final_sql, language)) }}
+        {{ return(dbt.snowflake__create_iceberg_table_as(temporary, relation, safe_sql, language)) }}
     {% else %}
         {{ return(dbt.snowflake__create_iceberg_table_as(temporary, relation, compiled_code, language)) }}
     {% endif %}
 {%- endmacro %}
+
+
+{# ============================================================================
+   SECTION 3B: MERGE OVERRIDE (Wrap staging source to cast unsupported types)
+   ============================================================================ #}
+
+{% macro snowflake__get_merge_sql(target, source, unique_key, dest_columns, incremental_predicates=none) %}
+{%- set is_iceberg = (
+    config.get('catalog_name') is not none
+    or config.get('table_format', '') | lower == 'iceberg'
+) -%}
+
+{%- if is_iceberg and execute -%}
+    {#-- Describe the staging relation to find columns needing casts --#}
+    {%- set describe_sql = "DESCRIBE TABLE " ~ source -%}
+    {%- set results = run_query(describe_sql) -%}
+
+    {%- set has_unsupported = [] -%}
+    {%- set wrapped_cols = [] -%}
+
+    {%- for row in results.rows -%}
+        {%- set col_name = row['name'] -%}
+        {%- set col_type = row['type'] | string | upper -%}
+
+        {%- if 'ARRAY' in col_type or 'OBJECT' in col_type or 'VARIANT' in col_type -%}
+            {%- do has_unsupported.append(col_name) -%}
+            {%- do wrapped_cols.append('CAST(TO_JSON("' ~ col_name ~ '") AS VARCHAR(16777216)) AS "' ~ col_name ~ '"') -%}
+        {%- else -%}
+            {%- do wrapped_cols.append('"' ~ col_name ~ '"') -%}
+        {%- endif -%}
+    {%- endfor -%}
+
+    {%- if has_unsupported | length > 0 -%}
+        {#-- Create a temp view wrapping the staging relation with proper casts --#}
+        {%- set safe_source = source.incorporate(path={"identifier": source.identifier ~ "__safe"}) -%}
+        {%- set create_safe_sql = "CREATE OR REPLACE TEMPORARY VIEW " ~ safe_source ~ " AS SELECT " ~ wrapped_cols | join(", ") ~ " FROM " ~ source -%}
+        {%- do run_query(create_safe_sql) -%}
+
+        {{ return(dbt.snowflake__get_merge_sql(target, safe_source, unique_key, dest_columns, incremental_predicates)) }}
+    {%- else -%}
+        {{ return(dbt.snowflake__get_merge_sql(target, source, unique_key, dest_columns, incremental_predicates)) }}
+    {%- endif -%}
+{%- else -%}
+    {{ return(dbt.snowflake__get_merge_sql(target, source, unique_key, dest_columns, incremental_predicates)) }}
+{%- endif -%}
+{% endmacro %}
+
+
+{# ============================================================================
+   SECTION 3C: ALTER COLUMN TYPE BYPASS (Prevent Iceberg type alteration)
+   ============================================================================ #}
+
+{% macro snowflake__alter_column_type(relation, column_name, new_column_type) %}
+{%- set is_iceberg = (
+    config.get('catalog_name') is not none
+    or config.get('table_format', '') | lower == 'iceberg'
+) -%}
+{%- set upper_type = new_column_type | upper -%}
+{%- set is_unsupported_type = ('VARIANT' in upper_type or 'ARRAY' in upper_type or 'OBJECT' in upper_type) -%}
+{%- if is_iceberg and is_unsupported_type -%}
+    {#-- Skip ALTER only for Iceberg-unsupported types (VARIANT/ARRAY/OBJECT).
+         These are phantom mismatches from the staging view's native types;
+         the actual casting is handled at MERGE time by the get_merge_sql override. --#}
+    {{ log("Iceberg: skipping ALTER COLUMN TYPE for " ~ column_name ~ " to " ~ new_column_type ~ " (unsupported Iceberg type)", info=True) }}
+{%- else -%}
+    {{ return(dbt.snowflake__alter_column_type(relation, column_name, new_column_type)) }}
+{%- endif -%}
+{% endmacro %}
 
 
 {# ============================================================================
@@ -189,8 +233,8 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
     {% call statement('create_type_introspection_view') %}
         {{ config.get('sql_header', '') }}
         CREATE OR REPLACE VIEW {{ temp_view }} AS (
-{{ compiled_code }}
-)
+        {{ compiled_code }}
+        )
     {% endcall %}
 
     {%- set describe_sql = "DESCRIBE VIEW " ~ temp_view -%}

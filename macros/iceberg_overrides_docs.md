@@ -4,7 +4,12 @@
 
 `iceberg_overrides.sql` is a Jinja macro file in `cp-dbt-standard-package` that globally intercepts dbt's native Snowflake materialization macros. Its primary purpose is to make all model output **safe for Snowflake Native Iceberg tables** by dynamically inspecting and recasting column types that Iceberg does not support or that require explicit precision.
 
-It is organized into five sections, each addressing a distinct compatibility concern.
+- Semi-structured types (`VARIANT`, `ARRAY`, `OBJECT`)
+- Timestamp / numeric type normalization
+- Avoiding invalid `ALTER TABLE` DDL on Iceberg tables
+- Incremental strategies (merge) when above datatypes are encountered
+
+It is organized into five sections, each addressing a distinct compatibility concern. These macros are meant to be used with **dbt Core ≥ 1.11**.
 
 ---
 
@@ -37,12 +42,16 @@ Non-Iceberg models fall through to the original dbt logic unchanged.
 These macros intercept every DDL path dbt uses to materialize a model. The pattern for table materializations is:
 
 1. Run `iceberg_type_safe_wrap(compiled_code)` to get a cast-safe SELECT.
-2. Execute `CREATE OR REPLACE TEMPORARY TABLE <relation>__dbt_pre AS <safe_sql>` — a regular (non-Iceberg) temp table that accepts all types.
-3. Pass `SELECT * FROM <relation>__dbt_pre` as the body of the real `CREATE ICEBERG TABLE` DDL.
+2. Pass that safe SQL directly into dbt's native table/view creation macros as the body of the real `CREATE ICEBERG <TABLE>` DDL.
 
-This two-step approach ensures type coercions happen in a permissive staging table before being read into the strict Iceberg target.
+This two-step approach ensures type coercions happen in a different SQL before being read into the strict Iceberg target.
 
-**`snowflake__create_table_as` skips this two-step path when `temporary=True`** — temporary relations are staging helpers for incremental models and do not need Iceberg type casting.
+### Section 3B & 3C — Incremental Merge & Alter Bypass
+Macros: snowflake__get_merge_sql, snowflake__alter_column_type
+
+MERGE Override: For incremental Iceberg models, the staging relation might natively hold unsupported types. This macro intercepts the MERGE operation, dynamically introspects the staging table, and wraps it in a temporary safe view (__safe) that casts VARIANT, ARRAY, and OBJECT to JSON strings before merging into the final target.
+
+ALTER Bypass: Prevents dbt from attempting to ALTER COLUMN TYPE on Iceberg tables for phantom mismatches (like native arrays vs. stringified JSON arrays), skipping the command to prevent errors.
 
 ---
 
@@ -155,3 +164,4 @@ A short-lived `TEMPORARY TABLE` created in the same session as the dbt run, name
 | dbt YAML contract DDL injection | `CREATE ICEBERG TABLE` fails with inline constraint syntax | Override `get_table_columns_and_constraints` to return empty string |
 | dbt Python contract column assertion | Build failure due to type name mismatch after casting | Override `get_assert_columns_equivalent` to return empty string |
 | Iceberg incremental models using view as temp relation | Merge/delete+insert fails — can't merge from a view into Iceberg | Force `tmp_relation_type = "table"` for Iceberg models |
+| Phantom type mismatches during incremental runs	| dbt attempts ALTER COLUMN TYPE and fails | Override snowflake__alter_column_type to skip on JSON types |
