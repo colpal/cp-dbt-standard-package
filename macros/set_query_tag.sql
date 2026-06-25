@@ -1,30 +1,47 @@
 {% macro set_query_tag(extra = {}) -%}
-    {% do run_query('use warehouse CP_DBT_XSMALL_WH_V2') %} 
+    {% do run_query('use warehouse ' ~ var('warehouse_recommendation_lookup', 'CP_DBT_XSMALL_WH_V2')) %}
     {% set relation = api.Relation.create(
-        database='OPS_CUR', 
-        schema='WH_RECOMMENDATIONS', 
+        database='OPS_CUR',
+        schema='WH_RECOMMENDATIONS',
         identifier='DIM_WAREHOUSE_RECOMMENDATION'
     ) %}
-    
-    {% set airflow_run = env_var('AIRFLOW_RUN', 'true') %}
-    {% set where_statement = "source_uri = '" ~ model.name ~ "' and database_name = '" ~ model.database ~ "' and airflow = '" ~ airflow_run ~ "'" %}
 
-    {% set warehouse = dbt_utils.get_column_values(
-        relation, 
-        'RECOMMENDED_WAREHOUSE_NAME', 
-        default=['CP_DBT_LARGE_WH_V2'], 
-        where=where_statement
-    ) %}
-    {% set warehouseName = warehouse[0] if warehouse else 'CP_DBT_LARGE_WH_V2' %}
-    
+    {% set airflow_run = env_var('AIRFLOW_RUN', 'true') %}
+    {% set default_warehouse = var('warehouse_recommendation_default', 'CP_DBT_LARGE_WH_V2') %}
+
+    {% set rec_query %}
+        select
+            override_warehouse_name,
+            override_warehouse_size,
+            recommended_warehouse_size
+        from {{ relation }}
+        where source_uri = '{{ model.name }}'
+            and airflow = '{{ airflow_run }}'
+        limit 1
+    {% endset %}
+
+    {% set warehouseName = default_warehouse %}
+    {% if execute %}
+        {% set results = run_query(rec_query) %}
+        {% if results and results.rows | length > 0 %}
+            {% set row = results.rows[0] %}
+            {% if row[0] %}
+                {% set warehouseName = row[0] %}
+            {% elif row[1] %}
+                {% set warehouseName = 'cp_dbt_' ~ row[1].replace('-', '') ~ '_wh_v2' %}
+            {% elif row[2] %}
+                {% set warehouseName = 'cp_dbt_' ~ row[2].replace('-', '') ~ '_wh_v2' %}
+            {% endif %}
+        {% endif %}
+    {% endif %}
+
     {% set merged_extra = extra.copy() %}
     {% do merged_extra.update({
-        'invocation_id': invocation_id, 
+        'invocation_id': invocation_id,
         'model': model.name,
-        'database': model.database,
         'is_airflow_run': airflow_run
     }) %}
-    
+
     {% set result = adapter.dispatch('set_query_tag', 'dbt_query_tags')(extra=merged_extra) %}
     {% do run_query('USE WAREHOUSE "' ~ warehouseName.upper() ~ '"') %}
 
