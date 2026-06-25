@@ -30,7 +30,6 @@
       {% set rec_query %}
           select
               override_warehouse_name,
-              override_warehouse_size,
               recommended_warehouse_size
           from {{ relation }}
           where source_uri = '{{ model.name }}'
@@ -47,8 +46,6 @@
                   {% set selected_wh = row[0] %}
               {% elif row[1] %}
                   {% set selected_wh = 'CP_DBT_' ~ v1_size_to_name(row[1]) ~ '_WH' %}
-              {% elif row[2] %}
-                  {% set selected_wh = 'CP_DBT_' ~ v1_size_to_name(row[2]) ~ '_WH' %}
               {% endif %}
           {% endif %}
       {% endif %}
