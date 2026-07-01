@@ -47,7 +47,15 @@
               {% if row[0] %}
                   {% set selected_wh = row[0] %}
               {% elif row[1] %}
-                  {% set selected_wh = 'CP_DBT_' ~ v1_size_to_name(row[1]) ~ '_WH' %}
+                  
+                  {# Inline Size Transformation Logic #}
+                  {% set token_lower = row[1] | lower %}
+                  {% set cap_above_large = ['x-large', '2x-large', '3x-large', '4x-large', '5x-large', '6x-large'] %}
+                  {% set effective_size = 'large' if token_lower in cap_above_large else token_lower %}
+                  {% set formatted_size = effective_size.replace('-', '') | upper %}
+                  
+                  {% set selected_wh = 'CP_DBT_' ~ formatted_size ~ '_WH' %}
+                  
               {% endif %}
           {% endif %}
       {% endif %}
@@ -56,20 +64,4 @@
 
   {% endif %}
 
-{%- endmacro %}
-
-
-{#
-  Translate a generation-agnostic size token from
-  OPS_CUR.WH_RECOMMENDATIONS.DIM_WAREHOUSE_RECOMMENDATION into the V1 named-pool
-  size segment. Caps anything above LARGE at LARGE because V1 deploy roles do
-  not have USAGE on CP_DBT_{X,2X,...}LARGE_WH. Strips hyphens so '2x-large'
-  becomes '2XLARGE' (used only when the cap is relaxed; today the cap holds).
-#}
-{% macro v1_size_to_name(size_token) -%}
-    {# Case-sensitivity fix applied here using | lower #}
-    {%- set token_lower = size_token | lower -%}
-    {%- set cap_above_large = ['x-large', '2x-large', '3x-large', '4x-large', '5x-large', '6x-large'] -%}
-    {%- set effective = 'large' if token_lower in cap_above_large else token_lower -%}
-    {{- effective.replace('-', '') | upper -}}
 {%- endmacro %}
