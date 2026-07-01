@@ -1,6 +1,6 @@
 {% macro set_query_tag(extra = {}) -%}
 
-  {% set airflow_run = 'true' %}
+  {% set airflow_run = env_var('AIRFLOW_RUN', 'true') %}
 
   {# 1. Global Tagging (Executes for Everyone) #}
   {% set merged_extra = extra.copy() %}
