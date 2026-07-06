@@ -7,6 +7,7 @@
   {% do merged_extra.update({
       'invocation_id': invocation_id,
       'model': model.name,
+      'database': model.database,
       'is_airflow_run': airflow_run
   }) %}
   {% set result = adapter.dispatch('set_query_tag', 'dbt_query_tags')(extra=merged_extra) %}
@@ -33,6 +34,7 @@
               recommended_warehouse_size
           from {{ relation }}
           where source_uri = '{{ model.name }}'
+              and database_name = '{{ model.database }}'
               and airflow = '{{ airflow_run }}'
           limit 1
       {% endset %}
