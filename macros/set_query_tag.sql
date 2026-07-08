@@ -7,7 +7,11 @@
     ) %}
     
     {% set airflow_run = env_var('AIRFLOW_RUN', 'true') %}
-    {% set where_statement = "source_uri = '" ~ model.name ~ "' and database_name = '" ~ model.database ~ "' and airflow = '" ~ airflow_run ~ "'" %}
+
+    {% set active_db = model.database | string | upper %}
+    {% set search_db = active_db[:-3] if active_db.endswith('_PD') else active_db %}
+    
+    {% set where_statement = "upper(source_uri) = upper('" ~ model.name ~ "') and upper(database_name) = '" ~ search_db ~ "' and lower(airflow) = lower('" ~ airflow_run ~ "')" %}
 
     {% set warehouse = dbt_utils.get_column_values(
         relation, 
