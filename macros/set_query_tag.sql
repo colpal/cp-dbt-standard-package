@@ -28,14 +28,17 @@
           identifier='DIM_WAREHOUSE_RECOMMENDATION'
       ) %}
 
+      {% set active_db = model.database | string | upper %}
+      {% set search_db = active_db[:-3] if active_db.endswith('_PD') else active_db %}
+
       {% set rec_query %}
           select
               override_warehouse_name,
               recommended_warehouse_size
           from {{ relation }}
-          where source_uri = '{{ model.name }}'
-              and database_name = '{{ model.database }}'
-              and airflow = '{{ airflow_run }}'
+          where upper(source_uri) = upper('{{ model.name }}')
+              and upper(database_name) = upper('{{ search_db }}')
+              and lower(airflow) = lower('{{ airflow_run }}')
           limit 1
       {% endset %}
 
