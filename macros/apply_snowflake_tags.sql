@@ -289,11 +289,18 @@
    AUTO-TAG FROM RUN RESULTS (on-run-end)
    Called automatically by on-run-end hook to reapply tags after dbt runs.
 
-   DPB-2513 command guard: skip when the current dbt invocation cannot have
-   created or replaced Snowflake objects (test / compile / parse / deps /
-   list / docs / debug / show / clean / init). Belt-and-suspenders with the
-   yaml-level guard in dbt_project.yml — protects any downstream project
-   that wires this macro into on-run-end without the yaml guard.
+   DPB-2513 guards, in order:
+     1. Command guard: skip when the current dbt invocation cannot have
+        created or replaced Snowflake objects (test / compile / parse /
+        deps / list / docs / debug / show / clean / init). Belt-and-suspenders
+        with the yaml-level guard in dbt_project.yml — protects any downstream
+        project that wires this macro into on-run-end without the yaml guard.
+     2. Metadata-package guard: skip when the only successful models were
+        from `dbt_project_evaluator`. dbt-common CI runs that package as its
+        own dedicated `dbt build --select package:dbt_project_evaluator+`
+        step; its models never carry `snowflake_tags`, so there is nothing
+        to reapply. Extend the ignore list if new metadata-only packages
+        (e.g. elementary) are added to CI.
    ============================================================ #}
 {% macro tag_models_from_results() %}
     {% if execute %}
@@ -308,9 +315,12 @@
             {{ return('') }}
         {% endif %}
 
+        {% set ignore_packages = ['dbt_project_evaluator'] %}
         {% set successful_models = [] %}
         {% for res in results %}
-            {% if res.node.resource_type == 'model' and res.status in ['success', 'pass'] %}
+            {% if res.node.resource_type == 'model'
+              and res.status in ['success', 'pass']
+              and res.node.package_name not in ignore_packages %}
                 {% do successful_models.append(res.node.unique_id) %}
             {% endif %}
         {% endfor %}
@@ -319,7 +329,11 @@
             {{ log("Auto-tagging " ~ successful_models | length ~ " deployed model(s)", info=true) }}
             {{ cp_dbt_standard_package.tag_models_on_run_end(successful_models) }}
         {% else %}
-            {{ log("No successfully deployed models to tag.", info=true) }}
+            {{ log(
+                "[tag_models_from_results] SKIPPED | no user-project models successfully built"
+                ~ " (ignoring packages: " ~ ignore_packages | join(', ') ~ ") — nothing to tag.",
+                info=true
+            ) }}
         {% endif %}
     {% endif %}
 {% endmacro %}
@@ -329,12 +343,20 @@
    CALL CERTIFIED READ PROCEDURE (on-run-end)
    Calls the Snowflake stored procedure to apply certified read grants after dbt runs.
 
-   DPB-2513 command guard: skip when the current dbt invocation cannot have
-   created or replaced Snowflake objects (test / compile / parse / deps /
-   list / docs / debug / show / clean / init). This is the primary blocker
-   for the per-domain <DOMAIN>_TEST role rollout — the read-only test role
-   must not require USAGE on OPS_CUR.UTIL_COMMON.GRANT_CERTIFIED_READ_ACCESS.
-   Belt-and-suspenders with the yaml-level guard in dbt_project.yml.
+   DPB-2513 guards, in order:
+     1. Command guard: skip when the current dbt invocation cannot have
+        created or replaced Snowflake objects (test / compile / parse /
+        deps / list / docs / debug / show / clean / init). Primary blocker
+        for the per-domain <DOMAIN>_TEST role rollout — the read-only test
+        role must not require USAGE on
+        OPS_CUR.UTIL_COMMON.GRANT_CERTIFIED_READ_ACCESS. Belt-and-suspenders
+        with the yaml-level guard in dbt_project.yml.
+     2. Metadata-package guard: skip when the only successful models were
+        from `dbt_project_evaluator`. CI's `dbt build --select
+        package:dbt_project_evaluator+` step never touches models that
+        carry IS_CERTIFIED, so CERTIFIED_READ grants cannot have been
+        wiped — the CALL would be wasted. Extend the ignore list if new
+        metadata-only packages are added to CI.
    ============================================================ #}
 {% macro call_certified_read_proc() %}
     {% if execute %}
@@ -345,6 +367,25 @@
                 ~ "' does not create or replace Snowflake objects — CERTIFIED_READ grants"
                 ~ " cannot have been wiped by this run. Hook only fires for: "
                 ~ object_mutating_cmds | join(', '),
+                info=true
+            ) }}
+            {{ return('') }}
+        {% endif %}
+
+        {% set ignore_packages = ['dbt_project_evaluator'] %}
+        {% set user_models = [] %}
+        {% for res in results %}
+            {% if res.node.resource_type == 'model'
+              and res.status in ['success', 'pass']
+              and res.node.package_name not in ignore_packages %}
+                {% do user_models.append(res.node.unique_id) %}
+            {% endif %}
+        {% endfor %}
+        {% if user_models | length == 0 %}
+            {{ log(
+                "[call_certified_read_proc] SKIPPED | no user-project models successfully built"
+                ~ " (ignoring packages: " ~ ignore_packages | join(', ') ~ ") — CERTIFIED_READ"
+                ~ " grants cannot have been wiped by this run.",
                 info=true
             ) }}
             {{ return('') }}
