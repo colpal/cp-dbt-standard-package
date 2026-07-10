@@ -351,12 +351,19 @@
         role must not require USAGE on
         OPS_CUR.UTIL_COMMON.GRANT_CERTIFIED_READ_ACCESS. Belt-and-suspenders
         with the yaml-level guard in dbt_project.yml.
-     2. Metadata-package guard: skip when the only successful models were
-        from `dbt_project_evaluator`. CI's `dbt build --select
-        package:dbt_project_evaluator+` step never touches models that
-        carry IS_CERTIFIED, so CERTIFIED_READ grants cannot have been
-        wiped — the CALL would be wasted. Extend the ignore list if new
-        metadata-only packages are added to CI.
+     2. Metadata-package guard: skip when the only successful grant-holding
+        nodes (models, seeds, snapshots) were from `dbt_project_evaluator`.
+        CI's `dbt build --select package:dbt_project_evaluator+` step never
+        touches nodes that carry IS_CERTIFIED, so CERTIFIED_READ grants
+        cannot have been wiped — the CALL would be wasted. Extend the
+        ignore list if new metadata-only packages are added to CI.
+
+        Filter covers `model`, `seed`, and `snapshot` because each
+        materializes as a Snowflake table/view that can hold an
+        IS_CERTIFIED tag and therefore CERTIFIED_READ grants. Restricting
+        the filter to `model` alone (previous form) incorrectly skipped
+        the CALL on `dbt seed` / `dbt snapshot` runs whose results
+        contain no model nodes.
    ============================================================ #}
 {% macro call_certified_read_proc() %}
     {% if execute %}
@@ -373,19 +380,22 @@
         {% endif %}
 
         {% set ignore_packages = ['dbt_project_evaluator'] %}
-        {% set user_models = [] %}
+        {% set grantable_resource_types = ('model', 'seed', 'snapshot') %}
+        {% set grantable_nodes = [] %}
         {% for res in results %}
-            {% if res.node.resource_type == 'model'
+            {% if res.node.resource_type in grantable_resource_types
               and res.status in ['success', 'pass']
               and res.node.package_name not in ignore_packages %}
-                {% do user_models.append(res.node.unique_id) %}
+                {% do grantable_nodes.append(res.node.unique_id) %}
             {% endif %}
         {% endfor %}
-        {% if user_models | length == 0 %}
+        {% if grantable_nodes | length == 0 %}
             {{ log(
-                "[call_certified_read_proc] SKIPPED | no user-project models successfully built"
-                ~ " (ignoring packages: " ~ ignore_packages | join(', ') ~ ") — CERTIFIED_READ"
-                ~ " grants cannot have been wiped by this run.",
+                "[call_certified_read_proc] SKIPPED | no user-project "
+                ~ grantable_resource_types | join(' / ')
+                ~ " successfully built (ignoring packages: "
+                ~ ignore_packages | join(', ')
+                ~ ") — CERTIFIED_READ grants cannot have been wiped by this run.",
                 info=true
             ) }}
             {{ return('') }}
