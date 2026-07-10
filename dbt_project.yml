@@ -27,7 +27,20 @@ clean-targets:         # directories to be removed by `dbt clean`
 models:
   +transient: false
 
-# Automatically reapply Snowflake tags after every dbt run (fixes tag loss on view recreation)
+# Reapply Snowflake tags + reconcile CERTIFIED_READ grants after object-mutating dbt runs.
+#
+# DPB-2513: Gate on flags.WHICH so hooks fire ONLY for commands that create or
+# replace Snowflake objects (run, build, seed, snapshot, clone).
+#
+# Skipped commands (test, compile, parse, deps, list, docs, debug, show, clean,
+# init) do not touch object DDL — tag reapplication and CERTIFIED_READ grant
+# reconciliation have nothing to reconcile. This also unblocks per-domain
+# read-only test roles (e.g. <DOMAIN>_TEST) which must not hold USAGE on
+# OPS_CUR.UTIL_COMMON.GRANT_CERTIFIED_READ_ACCESS* and would otherwise fail
+# `dbt test` with 002141 "Unknown user-defined function".
+#
+# SBX / _LAB_ guard: sandbox and lab databases are analyst-owned; skip both
+# tagging and grant reconciliation there.
 on-run-end:
-  - "{% if 'SBX' not in target.database | upper and '_LAB_' not in target.database | upper %}{{ cp_dbt_standard_package.tag_models_from_results() }}{% endif %}"
-  - "{% if 'SBX' not in target.database | upper and '_LAB_' not in target.database | upper %}{{ cp_dbt_standard_package.call_certified_read_proc() }}{% endif %}"
+  - "{% if flags.WHICH in ['run','build','seed','snapshot','clone'] and 'SBX' not in target.database | upper and '_LAB_' not in target.database | upper %}{{ cp_dbt_standard_package.tag_models_from_results() }}{% endif %}"
+  - "{% if flags.WHICH in ['run','build','seed','snapshot','clone'] and 'SBX' not in target.database | upper and '_LAB_' not in target.database | upper %}{{ cp_dbt_standard_package.call_certified_read_proc() }}{% endif %}"

@@ -287,10 +287,27 @@
 
 {# ============================================================
    AUTO-TAG FROM RUN RESULTS (on-run-end)
-   Called automatically by on-run-end hook to reapply tags after dbt runs
+   Called automatically by on-run-end hook to reapply tags after dbt runs.
+
+   DPB-2513 command guard: skip when the current dbt invocation cannot have
+   created or replaced Snowflake objects (test / compile / parse / deps /
+   list / docs / debug / show / clean / init). Belt-and-suspenders with the
+   yaml-level guard in dbt_project.yml — protects any downstream project
+   that wires this macro into on-run-end without the yaml guard.
    ============================================================ #}
 {% macro tag_models_from_results() %}
     {% if execute %}
+        {% set object_mutating_cmds = ['run', 'build', 'seed', 'snapshot', 'clone'] %}
+        {% if flags.WHICH not in object_mutating_cmds %}
+            {{ log(
+                "[tag_models_from_results] SKIPPED | command '" ~ flags.WHICH
+                ~ "' does not create or replace Snowflake objects — nothing to tag."
+                ~ " Hook only fires for: " ~ object_mutating_cmds | join(', '),
+                info=true
+            ) }}
+            {{ return('') }}
+        {% endif %}
+
         {% set successful_models = [] %}
         {% for res in results %}
             {% if res.node.resource_type == 'model' and res.status in ['success', 'pass'] %}
@@ -310,10 +327,29 @@
 
 {# ============================================================
    CALL CERTIFIED READ PROCEDURE (on-run-end)
-   Calls the Snowflake stored procedure to apply certified read grants after dbt runs
+   Calls the Snowflake stored procedure to apply certified read grants after dbt runs.
+
+   DPB-2513 command guard: skip when the current dbt invocation cannot have
+   created or replaced Snowflake objects (test / compile / parse / deps /
+   list / docs / debug / show / clean / init). This is the primary blocker
+   for the per-domain <DOMAIN>_TEST role rollout — the read-only test role
+   must not require USAGE on OPS_CUR.UTIL_COMMON.GRANT_CERTIFIED_READ_ACCESS.
+   Belt-and-suspenders with the yaml-level guard in dbt_project.yml.
    ============================================================ #}
 {% macro call_certified_read_proc() %}
     {% if execute %}
+        {% set object_mutating_cmds = ['run', 'build', 'seed', 'snapshot', 'clone'] %}
+        {% if flags.WHICH not in object_mutating_cmds %}
+            {{ log(
+                "[call_certified_read_proc] SKIPPED | command '" ~ flags.WHICH
+                ~ "' does not create or replace Snowflake objects — CERTIFIED_READ grants"
+                ~ " cannot have been wiped by this run. Hook only fires for: "
+                ~ object_mutating_cmds | join(', '),
+                info=true
+            ) }}
+            {{ return('') }}
+        {% endif %}
+
         {{ log("Calling GRANT_CERTIFIED_READ_ACCESS procedure to apply certified read grants", info=true) }}
         {% do run_query("CALL OPS_CUR.UTIL_COMMON.GRANT_CERTIFIED_READ_ACCESS()") %}
     {% endif %}
