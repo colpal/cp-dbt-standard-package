@@ -251,7 +251,13 @@
     {% if relation and relation.is_iceberg_format %}
         {% set ddl_prefix = 'ICEBERG ' %}
     {% endif %}
-
+    {# --------------------------------------------------------
+       Role switch: tag DDL must run as {domain}_DEPLOY_CON,
+       not {domain}_DEPLOY_CUR. Switch only if needed, and
+       always restore the session role afterwards.
+       -------------------------------------------------------- #}
+    {% set original_role = target.role | upper %}
+    {% set tagging_role = cp_dbt_standard_package.get_tagging_role() %}
     {% if tagging_role %}
         {{ log("Switching role " ~ original_role ~ " -> " ~ tagging_role ~ " for tag DDL", info=true) }}
         {% do run_query('USE ROLE ' ~ tagging_role) %}
@@ -266,6 +272,11 @@
     {% do run_query(sql) %}
     {{ log("Applied column tag '" ~ tag_name ~ "' to " ~ column_name ~ " in " ~ schema ~ "." ~ identifier, info=true) }}
 
+    {# Restore original session role #}
+    {% if tagging_role %}
+        {% do run_query('USE ROLE ' ~ original_role) %}
+    {% endif %}
+  
 {% endmacro %}
 
 
