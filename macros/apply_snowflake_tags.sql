@@ -179,7 +179,6 @@
     {% endif %}
   
     {# Apply tag #}
-    {% 
     {% set sql %}
       ALTER {{ ddl_prefix }}{{ relation_type }} {{ database_nm }}.{{ schema }}.{{ identifier }}
       SET TAG {{ config.tag_database }}.{{ config.tag_schema }}.{{ tag_name }} = '{{ tag_value }}'
@@ -564,7 +563,7 @@
 {% macro call_cross_domain_read_proc() %}
     {% if execute %}
 
-        {# --------------------------------------------------------
+        {# ---------------------f-----------------------------------
            Role guard: fire for DEPLOY roles (CI/CD) and ELT roles (Airflow).
            Both can rebuild models (DROP + CREATE) which wipes all Snowflake
            object-level grants including CROSS_DOMAIN_READ.SELECT. The proc must
