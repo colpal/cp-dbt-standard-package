@@ -46,6 +46,20 @@
     {{ return(config) }}
 {% endmacro %}
 
+{# ============================================================
+   RESOLVE TAGGING ROLE
+   Tag DDL on CON-layer objects must run as the CON deploy role.
+   Swaps {domain}_DEPLOY_CUR -> {domain}_DEPLOY_CON.
+   Returns none if no switch is needed.
+   ============================================================ #}
+{% macro get_tagging_role() %}
+    {% set current_role = target.role | upper %}
+    {% if '_DEPLOY_CUR' in current_role %}
+        {{ return(current_role | replace('_DEPLOY_CUR', '_DEPLOY_CON')) }}
+    {% endif %}
+    {{ return(none) }}
+{% endmacro %}
+
 -- retrieve all available Snowflake tags from central schema
 {% macro get_snowflake_tags(show_log=false) %}
 
@@ -151,8 +165,21 @@
     {% if relation and relation.is_iceberg_format %}
         {% set ddl_prefix = 'ICEBERG ' %}
     {% endif %}
+    {# --------------------------------------------------------
+       Role switch: tag DDL must run as {domain}_DEPLOY_CON,
+       not {domain}_DEPLOY_CUR. Switch only if needed, and
+       always restore the session role afterwards.
+       -------------------------------------------------------- #}
+    {% set original_role = target.role | upper %}
+    {% set tagging_role = cp_dbt_standard_package.get_tagging_role() %}
 
+    {% if tagging_role %}
+        {{ log("Switching role " ~ original_role ~ " -> " ~ tagging_role ~ " for tag DDL", info=true) }}
+        {% do run_query('USE ROLE ' ~ tagging_role) %}
+    {% endif %}
+  
     {# Apply tag #}
+    {% 
     {% set sql %}
       ALTER {{ ddl_prefix }}{{ relation_type }} {{ database_nm }}.{{ schema }}.{{ identifier }}
       SET TAG {{ config.tag_database }}.{{ config.tag_schema }}.{{ tag_name }} = '{{ tag_value }}'
@@ -161,6 +188,11 @@
     {% do run_query(sql) %}
     {{ log("Applied tag '" ~ tag_name ~ "' to " ~ schema ~ "." ~ identifier, info=true) }}
 
+    {# Restore original session role #}
+    {% if tagging_role %}
+        {% do run_query('USE ROLE ' ~ original_role) %}
+    {% endif %}
+  
 {% endmacro %}
 
 
