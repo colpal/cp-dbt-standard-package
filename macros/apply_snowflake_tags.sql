@@ -252,6 +252,11 @@
         {% set ddl_prefix = 'ICEBERG ' %}
     {% endif %}
 
+    {% if tagging_role %}
+        {{ log("Switching role " ~ original_role ~ " -> " ~ tagging_role ~ " for tag DDL", info=true) }}
+        {% do run_query('USE ROLE ' ~ tagging_role) %}
+    {% endif %}
+  
     {% set sql %}
       ALTER {{ ddl_prefix }}{{ relation_type }} {{ database_nm }}.{{ schema }}.{{ identifier }}
       MODIFY COLUMN {{ column_name }}
