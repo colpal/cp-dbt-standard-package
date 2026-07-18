@@ -621,7 +621,15 @@
                     {% set cross_domain = true %}
                 {% endif %}
                 {% if cross_domain %}
-                    {% set db  = node.database | upper %}
+                    {% set db = node.database | upper %}
+                    {# Normalize ephemeral env suffixes back to the production database name:
+                    EX_CON_PD      -> EX_CON
+                    EX_CON_PR_123  -> EX_CON #}
+                    {% if '_PR_' in db %}
+                        {% set db = db.split('_PR_')[0] %}
+                    {% elif db.endswith('_PD') %}
+                        {% set db = db[:-3] %}
+                    {% endif %}
                     {% set mat = node.config.materialized %}
                     {% set obj_type = 'VIEW' if mat == 'view' else 'TABLE' %}
                     {% if db not in cross_domain_by_db %}
