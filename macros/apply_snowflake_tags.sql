@@ -676,13 +676,27 @@
                 ) }}
             {% else %}
                 {# ── PUSH/MERGE (production): call the proc once per domain ── #}
+                {# Role switch: the grant proc must run as {domain}_DEPLOY_CON,
+                not {domain}_DEPLOY_CUR. Switch once for the whole loop and
+                always restore the session role afterwards. #}
+                {% set original_role = target.role | upper %}
+                {% set grant_role = cp_dbt_standard_package.get_tagging_role() %}
+                {% if grant_role %}
+                    {{ log(
+                        "[cross_domain_grants] Switching role " ~ original_role
+                        ~ " -> " ~ grant_role ~ " for grant proc calls",
+                        info=true
+                    ) }}
+                    {% do run_query('USE ROLE ' ~ grant_role) %}
+                {% endif %}
+
                 {% for domain_db, objects in cross_domain_by_db.items() %}
                     {% set json_payload = tojson(objects) %}
                     {{ log(
                         "[cross_domain_grants] CALLING | event: " ~ github_event
                         ~ " | domain: " ~ domain_db
                         ~ " | cross domain objects: " ~ objects | length
-                        ~ " | role: " ~ target.role,
+                        ~ " | role: " ~ (grant_role if grant_role else original_role),
                         info=true
                     ) }}
                     {% set call_sql %}
@@ -692,6 +706,11 @@
                     {% endset %}
                     {% do run_query(call_sql) %}
                 {% endfor %}
+
+                {# Restore original session role #}
+                {% if grant_role %}
+                    {% do run_query('USE ROLE ' ~ original_role) %}
+                {% endif %}
             {% endif %}
         {% else %}
             {% if not is_push_merge %}
