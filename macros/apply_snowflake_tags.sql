@@ -607,51 +607,31 @@
            not rebuilt in this run but whose grants must remain active.
            -------------------------------------------------------- #}
         {% set cross_domain_by_db = {} %}
-
         {% for node_id, node in graph.nodes.items() %}
             {% if node.resource_type == 'model' %}
-
                 {# Resolve CROSS_DOMAIN from either tag location:
-                   - config.snowflake_tags (set via dbt model config)
-                   - config.meta.snowflake_tags (set via meta block) #}
+                - config.snowflake_tags (set via dbt model config)
+                - config.meta.snowflake_tags (set via meta block) #}
                 {% set model_tags  = node.config.get('snowflake_tags', {}) %}
                 {% set meta_tags   = node.config.get('meta', {}).get('snowflake_tags', {}) %}
-
                 {% set cross_domain = false %}
                 {% if model_tags.get('CROSS_DOMAIN', '') | upper == 'TRUE' %}
                     {% set cross_domain = true %}
                 {% elif meta_tags.get('CROSS_DOMAIN', '') | upper == 'TRUE' %}
                     {% set cross_domain = true %}
                 {% endif %}
-
                 {% if cross_domain %}
                     {% set db  = node.database | upper %}
                     {% set mat = node.config.materialized %}
-
-                    {# Map dbt materialization -> Snowflake object type.
-                       incremental / table -> TABLE; view -> VIEW.
-                       ephemeral models produce no physical object -- skip. #}
-                    {% if mat == 'ephemeral' %}
-                        {# nothing to grant -- ephemeral models are inlined #}
-                    {% else %}
-                        {% set obj_type = 'VIEW' if mat == 'view' else 'TABLE' %}
-
-                        {# Collect certified objects from production databases only.
-                           PR/PD databases are ephemeral and never hold prod grants. #}
-                        {% if '_PR_' not in db and not db.endswith('_PD') %}
-
-                            {% if db not in cross_domain_by_db %}
-                                {% do cross_domain_by_db.update({db: []}) %}
-                            {% endif %}
-
-                            {% do cross_domain_by_db[db].append({
-                                'schema': node.schema | upper,
-                                'name':   (node.config.get('alias') or node.name) | upper,
-                                'type':   obj_type
-                            }) %}
-
-                        {% endif %}
+                    {% set obj_type = 'VIEW' if mat == 'view' else 'TABLE' %}
+                    {% if db not in cross_domain_by_db %}
+                        {% do cross_domain_by_db.update({db: []}) %}
                     {% endif %}
+                    {% do cross_domain_by_db[db].append({
+                        'schema': node.schema | upper,
+                        'name':   (node.config.get('alias') or node.name) | upper,
+                        'type':   obj_type
+                    }) %}
                 {% endif %}
             {% endif %}
         {% endfor %}
