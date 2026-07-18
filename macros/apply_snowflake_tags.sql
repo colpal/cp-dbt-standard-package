@@ -428,9 +428,9 @@
                 {% set model_tags  = node.config.get('snowflake_tags', {}) %}
                 {% set meta_tags   = node.config.get('meta', {}).get('snowflake_tags', {}) %}
                 {% set certified_read = false %}
-                {% if model_tags.get('CERTIFIED_READ', '') | upper == 'TRUE' %}
+                {% if model_tags.get('IS_CERTIFIED', '') | upper == 'TRUE' %}
                     {% set cross_domain = true %}
-                {% elif meta_tags.get('CERTIFIED_READ', '') | upper == 'TRUE' %}
+                {% elif meta_tags.get('IS_CERTIFIED', '') | upper == 'TRUE' %}
                     {% set certified_read = true %}
                 {% endif %}
                 {% if certified_read %}
@@ -491,7 +491,7 @@
                     ) }}
                 {% endfor %}
                 {{ log(
-                    "[certified_read_grants] No grants issued — pull request runs do not hold CERTIFIED_READ_READ grants."
+                    "[certified_read_grants] No grants issued — pull request runs do not hold CERTIFIED_READ grants."
                     ~ " The hourly TAG_BASED_RBAC_CROSS_DOMAIN_PROC task is the safety net for this environment.",
                     info=true
                 ) }}
