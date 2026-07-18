@@ -668,15 +668,18 @@
            -------------------------------------------------------- #}
         {% set db_upper = target.database | upper %}
         {% set is_ephemeral = '_PR_' in db_upper or db_upper.endswith('_PD') %}
+        {% set github_event = env_var('GITHUB_EVENT_NAME', '') | lower %}
+        {% set is_push_merge = github_event in ['push', 'merge_group'] %}
 
         {% if cross_domain_by_db | length > 0 %}
-            {% if is_ephemeral %}
-                {# ── DRY RUN: log what production would do, no CALL issued ── #}
+            {% if not is_push_merge %}
+                {# ── DRY RUN (PR / non-merge event): log what production would do, no CALL issued ── #}
                 {{ log(
-                    "[cross_domain_grants] DRY RUN | env: " ~ target.database
+                    "[cross_domain_grants] DRY RUN | event: " ~ (github_event if github_event else 'unknown/local')
+                    ~ " | env: " ~ target.database
                     ~ " | role: " ~ target.role
                     ~ " | The following domain(s) would have GRANT_CROSS_DOMAIN_READ_ACCESS_BY_DOMAIN"
-                    ~ " called if this were a production run:",
+                    ~ " called if this were a push/merge run:",
                     info=true
                 ) }}
                 {% for domain_db, objects in cross_domain_by_db.items() %}
@@ -687,16 +690,17 @@
                     ) }}
                 {% endfor %}
                 {{ log(
-                    "[cross_domain_grants] No grants issued — ephemeral environments do not hold CROSS_DOMAIN_READ grants."
+                    "[cross_domain_grants] No grants issued — pull request runs do not hold CROSS_DOMAIN_READ grants."
                     ~ " The hourly TAG_BASED_RBAC_CROSS_DOMAIN_PROC task is the safety net for this environment.",
                     info=true
                 ) }}
             {% else %}
-                {# ── PRODUCTION: call the proc once per domain ── #}
+                {# ── PUSH/MERGE (production): call the proc once per domain ── #}
                 {% for domain_db, objects in cross_domain_by_db.items() %}
                     {% set json_payload = tojson(objects) %}
                     {{ log(
-                        "[cross_domain_grants] CALLING | domain: " ~ domain_db
+                        "[cross_domain_grants] CALLING | event: " ~ github_event
+                        ~ " | domain: " ~ domain_db
                         ~ " | cross domain objects: " ~ objects | length
                         ~ " | role: " ~ target.role,
                         info=true
@@ -704,16 +708,16 @@
                     {% set call_sql %}
                         CALL OPS_CUR.UTIL_COMMON.GRANT_CROSS_DOMAIN_READ_ACCESS_BY_DOMAIN(
                             '{{ domain_db }}',
-                            '{{ json_payload | replace("'", "\'") }}'
-                        )
+                            '{{ json_payload | replace("'", "\'") }}')
                     {% endset %}
                     {% do run_query(call_sql) %}
                 {% endfor %}
             {% endif %}
         {% else %}
-            {% if is_ephemeral %}
+            {% if not is_push_merge %}
                 {{ log(
-                    "[cross_domain_grants] SKIPPED | env: " ~ target.database
+                    "[cross_domain_grants] SKIPPED | event: " ~ (github_event if github_event else 'unknown/local')
+                    ~ " | env: " ~ target.database
                     ~ " | No cross domain models found targeting production databases."
                     ~ " In PR/PD runs, all node.database values resolve to ephemeral databases"
                     ~ " (_PR_*/_PD) and are excluded from grant processing by design.",
