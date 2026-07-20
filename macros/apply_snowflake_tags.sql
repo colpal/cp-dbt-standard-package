@@ -429,7 +429,7 @@
                 {% set meta_tags   = node.config.get('meta', {}).get('snowflake_tags', {}) %}
                 {% set certified_read = false %}
                 {% if model_tags.get('IS_CERTIFIED', '') | upper == 'TRUE' %}
-                    {% set cross_domain = true %}
+                    {% set certified_read = true %}
                 {% elif meta_tags.get('IS_CERTIFIED', '') | upper == 'TRUE' %}
                     {% set certified_read = true %}
                 {% endif %}
@@ -445,8 +445,8 @@
                     {% endif %}
                     {% set mat = node.config.materialized %}
                     {% set obj_type = 'VIEW' if mat == 'view' else 'TABLE' %}
-                    {% if db not in cross_domain_by_db %}
-                        {% do cross_domain_by_db.update({db: []}) %}
+                    {% if db not in certified_read_by_db %}
+                        {% do certified_read_by_db.update({db: []}) %}
                     {% endif %}
                     {% do certified_read_by_db[db].append({
                         'schema': node.schema | upper,
@@ -483,16 +483,16 @@
                     ~ " called if this were a push/merge run:",
                     info=true
                 ) }}
-                {% for domain_db, objects in cross_domain_by_db.items() %}
+                {% for domain_db, objects in certified_read_by_db.items() %}
                     {{ log(
-                        "[cross_domain_grants]   domain: " ~ domain_db
-                        ~ "  cross domain objects: " ~ objects | length,
+                        "[certified_read_grants]   domain: " ~ domain_db
+                        ~ "  certified read: " ~ objects | length,
                         info=true
                     ) }}
                 {% endfor %}
                 {{ log(
                     "[certified_read_grants] No grants issued — pull request runs do not hold CERTIFIED_READ grants."
-                    ~ " The hourly TAG_BASED_RBAC_CROSS_DOMAIN_PROC task is the safety net for this environment.",
+                    ~ " The hourly TAG_BASED_RBAC_CERTIFIED_READ_PROC task is the safety net for this environment.",
                     info=true
                 ) }}
             {% else %}
@@ -516,7 +516,7 @@
                     {{ log(
                         "[certified_read_grants] CALLING | event: " ~ github_event
                         ~ " | domain: " ~ domain_db
-                        ~ " | cross domain objects: " ~ objects | length
+                        ~ " | certified read objects: " ~ objects | length
                         ~ " | role: " ~ (grant_role if grant_role else original_role),
                         info=true
                     ) }}
