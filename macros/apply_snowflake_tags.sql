@@ -48,14 +48,30 @@
 
 {# ============================================================
    RESOLVE TAGGING ROLE
-   Tag DDL on CON-layer objects must run as the CON deploy role.
-   Swaps {domain}_DEPLOY_CUR -> {domain}_DEPLOY_CON.
+   Tag DDL must run as the role that owns the target object.
+   Uses the target database name (not just target.role) so a
+   CUR-session tagging CON-layer objects switches to CON, and a
+   CUR-session tagging CUR-layer objects (e.g. iceberg tables in
+   _PR_{N}_{DOMAIN}_CUR) does NOT switch. Iceberg tables enforce
+   strict OWNERSHIP for ALTER SET TAG, which is what surfaced this
+   bug in DPB-2591.
+
+   Layer inference (see data-platforms-infrastructure AGENTS.md):
+     {DOMAIN}_CUR / {DOMAIN}_CON                  (prod)
+     {DOMAIN}_CUR_PD / {DOMAIN}_CON_PD            (pre-deploy)
+     _PR_{N}_{DOMAIN}_CUR / _PR_{N}_{DOMAIN}_CON  (PR preview)
+   -> a trailing `_CON` or `_CON_PD` means CON layer; anything else CUR.
    Returns none if no switch is needed.
    ============================================================ #}
-{% macro get_tagging_role() %}
+{% macro get_tagging_role(database_nm) %}
     {% set current_role = target.role | upper %}
-    {% if '_DEPLOY_CUR' in current_role %}
+    {% set db_upper = database_nm | upper %}
+    {% set is_con_layer = db_upper.endswith('_CON') or db_upper.endswith('_CON_PD') %}
+
+    {% if is_con_layer and '_DEPLOY_CUR' in current_role %}
         {{ return(current_role | replace('_DEPLOY_CUR', '_DEPLOY_CON')) }}
+    {% elif (not is_con_layer) and '_DEPLOY_CON' in current_role %}
+        {{ return(current_role | replace('_DEPLOY_CON', '_DEPLOY_CUR')) }}
     {% endif %}
     {{ return(none) }}
 {% endmacro %}
@@ -171,7 +187,7 @@
        always restore the session role afterwards.
        -------------------------------------------------------- #}
     {% set original_role = target.role | upper %}
-    {% set tagging_role = cp_dbt_standard_package.get_tagging_role() %}
+    {% set tagging_role = cp_dbt_standard_package.get_tagging_role(database_nm) %}
 
     {% if tagging_role %}
         {{ log("Switching role " ~ original_role ~ " -> " ~ tagging_role ~ " for tag DDL", info=true) }}
@@ -257,7 +273,7 @@
        always restore the session role afterwards.
        -------------------------------------------------------- #}
     {% set original_role = target.role | upper %}
-    {% set tagging_role = cp_dbt_standard_package.get_tagging_role() %}
+    {% set tagging_role = cp_dbt_standard_package.get_tagging_role(database_nm) %}
     {% if tagging_role %}
         {{ log("Switching role " ~ original_role ~ " -> " ~ tagging_role ~ " for tag DDL", info=true) }}
         {% do run_query('USE ROLE ' ~ tagging_role) %}
