@@ -595,7 +595,7 @@
 {% macro call_cross_domain_read_proc() %}
     {% if execute %}
 
-        {# ---------------------f-----------------------------------
+        {# --------------------------------------------------------
            Role guard: fire for DEPLOY roles (CI/CD) and ELT roles (Airflow).
            Both can rebuild models (DROP + CREATE) which wipes all Snowflake
            object-level grants including CROSS_DOMAIN_READ.SELECT. The proc must

@@ -90,7 +90,7 @@ This is the core engine. It dynamically introspects the output columns of any co
 | `ARRAY` / `OBJECT` | `TO_JSON(...) AS VARCHAR(16777216)` | Not supported as Iceberg stored column types |
 | `VARCHAR` / `STRING` | `VARCHAR(16777216)` | Snowflake Iceberg max VARCHAR is 16 MB |
 | `NUMBER` / `DECIMAL` / `NUMERIC` (unspecified or `38,0`) | `NUMBER(38, 0)` | Unqualified NUMBER defaults may be rejected |
-| `VARIANT` | **no cast** | Supported natively by Snowflake Iceberg |
+| `VARIANT` | `TO_JSON(...) AS VARCHAR(16777216)` | Not supported as Iceberg stored column type |
 | All other types | **no cast** | Passed through as-is |
 
 ---
@@ -99,9 +99,7 @@ This is the core engine. It dynamically introspects the output columns of any co
 
 ### Will this trigger on non-Iceberg models?
 
-**Yes — `iceberg_type_safe_wrap` runs on every model** because the materialization overrides in Section 3 are global. However, the macro performs a live `DESCRIBE VIEW` and only injects casts for columns that actually need them. For models with no type mismatches the early-exit path fires and the original SQL is returned unchanged with minimal overhead (two lightweight DDL statements).
-
-If you need to restrict the override to Iceberg-only models, the `snowflake__get_tmp_relation_type` macro already gates on `catalog_name` / `catalog_type`, but Section 3 macros do not — this is intentional since the type coercions are harmless on regular tables.
+**No — as of v2.7.0, all Section 3 materialization overrides are gated by an Iceberg check** (`config.get('catalog_name')` or `config.get('table_format') == 'iceberg'`). Non-Iceberg models pass through to dbt's native macros with zero overhead. Only `snowflake__create_iceberg_table_as` and `snowflake__get_create_iceberg_table_as_sql` always apply the wrap, since they are only invoked for Iceberg models by definition.
 
 ---
 
