@@ -12,7 +12,7 @@
 
 {% set current_models_type=[] %}
 {%- for model in models_type -%}
-    {% do current_models_type.append(model | replace(".seed",".table") | replace(".incremental",".table") | replace(".snapshot",".table")) %} 
+    {% do current_models_type.append(model | replace(".seed",".table") | replace(".incremental",".table") | replace(".snapshot",".table") | replace(".dynamic_table",".table")) %} 
 {%- endfor -%}
 
 --Run a query to create the drop statements for all relations in snowflake that are NOT in the dbt project
