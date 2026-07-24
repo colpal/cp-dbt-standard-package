@@ -452,6 +452,7 @@
            not rebuilt in this run but whose grants must remain active.
            -------------------------------------------------------- #}
         {% set certified_read_by_db = {} %}
+        {% set skipped_ephemeral = [] %}
         {% for node_id, node in graph.nodes.items() %}
             {% if node.resource_type == 'model' %}
                 {# Resolve CERTIFIED_READ from either tag location:
@@ -466,28 +467,51 @@
                     {% set certified_read = true %}
                 {% endif %}
                 {% if certified_read %}
-                    {% set db = node.database | upper %}
-                    {# Normalize ephemeral env suffixes back to the production database name:
-                    EX_CON_PD      -> EX_CON
-                    EX_CON_PR_123  -> EX_CON #}
-                    {% if '_PR_' in db %}
-                        {% set db = db.split('_PR_')[0] %}
-                    {% elif db.endswith('_PD') %}
-                        {% set db = db[:-3] %}
-                    {% endif %}
                     {% set mat = node.config.materialized %}
-                    {% set obj_type = 'VIEW' if mat == 'view' else 'TABLE' %}
-                    {% if db not in certified_read_by_db %}
-                        {% do certified_read_by_db.update({db: []}) %}
+                    {# Ephemeral models produce no physical relation. Sending
+                       them into the by-domain proc would fail with 002003 the
+                       first time GRANT SELECT ON TABLE ... hits the target.
+                       Collect the names for a single roll-up log below and
+                       skip the manifest entry. #}
+                    {% if mat == 'ephemeral' %}
+                        {% do skipped_ephemeral.append(node.name) %}
+                    {% else %}
+                        {% set db = node.database | upper %}
+                        {# Normalize ephemeral env suffixes back to the production database name.
+                           Split from the LEFT with fixed segment offsets — the previous
+                           `db.split('_PR_')[0]` yields '' for real PR DB names like
+                           `_PR_67_FIN_CON` (they start with `_PR_`, so the first token is empty).
+                             _PR_{N}_{DOMAIN}_{LAYER} -> parts[3:] = [DOMAIN, LAYER] -> DOMAIN_LAYER
+                             {DOMAIN}_{LAYER}_PD      -> strip trailing _PD
+                             {DOMAIN}_{LAYER}         -> unchanged (prod) #}
+                        {% if db.startswith('_PR_') %}
+                            {% set parts = db.split('_') %}
+                            {% set db = parts[3:] | join('_') %}
+                        {% elif db.endswith('_PD') %}
+                            {% set db = db[:-3] %}
+                        {% endif %}
+                        {% set obj_type = 'VIEW' if mat == 'view' else 'TABLE' %}
+                        {% if db not in certified_read_by_db %}
+                            {% do certified_read_by_db.update({db: []}) %}
+                        {% endif %}
+                        {% do certified_read_by_db[db].append({
+                            'schema': node.schema | upper,
+                            'name':   (node.config.get('alias') or node.name) | upper,
+                            'type':   obj_type
+                        }) %}
                     {% endif %}
-                    {% do certified_read_by_db[db].append({
-                        'schema': node.schema | upper,
-                        'name':   (node.config.get('alias') or node.name) | upper,
-                        'type':   obj_type
-                    }) %}
                 {% endif %}
             {% endif %}
         {% endfor %}
+
+        {% if skipped_ephemeral | length > 0 %}
+            {{ log(
+                "[certified_read_grants] SKIPPED " ~ skipped_ephemeral | length
+                ~ " ephemeral IS_CERTIFIED model(s): " ~ skipped_ephemeral | join(', ')
+                ~ " — ephemeral models produce no physical relation and cannot receive grants.",
+                info=true
+            ) }}
+        {% endif %}
 
         {# --------------------------------------------------------
            Step 2: Call GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN once per
@@ -531,9 +555,12 @@
                 {# ── PUSH/MERGE (production): call the proc once per domain ── #}
                 {# Role switch: the grant proc must run as {domain}_DEPLOY_CON,
                 not {domain}_DEPLOY_CUR. Switch once for the whole loop and
-                always restore the session role afterwards. #}
+                always restore the session role afterwards.
+                get_tagging_role requires a database name to infer the CUR/CON
+                layer; pass target.database so a CUR-session tagging CON-layer
+                objects correctly switches to the CON deploy role. #}
                 {% set original_role = target.role | upper %}
-                {% set grant_role = cp_dbt_standard_package.get_tagging_role() %}
+                {% set grant_role = cp_dbt_standard_package.get_tagging_role(target.database) %}
                 {% if grant_role %}
                     {{ log(
                         "[certified_read_grants] Switching role " ~ original_role
@@ -552,10 +579,14 @@
                         ~ " | role: " ~ (grant_role if grant_role else original_role),
                         info=true
                     ) }}
+                    {# Snowflake single-quoted string literal escape is a doubled
+                       apostrophe (''), not a backslash. The prior `\'` escape
+                       leaves a raw ' inside the literal and breaks the payload
+                       whenever an object name contains an apostrophe. #}
                     {% set call_sql %}
                         CALL OPS_CUR.UTIL_COMMON.GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN(
                             '{{ domain_db }}',
-                            '{{ json_payload | replace("'", "\'") }}')
+                            '{{ json_payload | replace("'", "''") }}')
                     {% endset %}
                     {% do run_query(call_sql) %}
                 {% endfor %}
@@ -576,9 +607,12 @@
                     info=true
                 ) }}
             {% else %}
+                {# Tag name is IS_CERTIFIED (as configured on models). Prior log
+                   said CERTIFIED_READ, which is the database-role name, not the
+                   tag name — misleading for anyone grepping the CI log. #}
                 {{ log(
-                    "[certified_read_grants] SKIPPED | No models with CERTIFIED_READ=TRUE found in the dbt graph."
-                    ~ " Verify that cross domain models have snowflake_tags: {CERTIFIED_READ: 'TRUE'} in their config.",
+                    "[certified_read_grants] SKIPPED | No models with IS_CERTIFIED=TRUE found in the dbt graph."
+                    ~ " Verify that certified read models have snowflake_tags: {IS_CERTIFIED: 'TRUE'} in their config.",
                     info=true
                 ) }}
             {% endif %}
@@ -650,6 +684,7 @@
            not rebuilt in this run but whose grants must remain active.
            -------------------------------------------------------- #}
         {% set cross_domain_by_db = {} %}
+        {% set skipped_ephemeral = [] %}
         {% for node_id, node in graph.nodes.items() %}
             {% if node.resource_type == 'model' %}
                 {# Resolve CROSS_DOMAIN from either tag location:
@@ -664,28 +699,51 @@
                     {% set cross_domain = true %}
                 {% endif %}
                 {% if cross_domain %}
-                    {% set db = node.database | upper %}
-                    {# Normalize ephemeral env suffixes back to the production database name:
-                    EX_CON_PD      -> EX_CON
-                    EX_CON_PR_123  -> EX_CON #}
-                    {% if '_PR_' in db %}
-                        {% set db = db.split('_PR_')[0] %}
-                    {% elif db.endswith('_PD') %}
-                        {% set db = db[:-3] %}
-                    {% endif %}
                     {% set mat = node.config.materialized %}
-                    {% set obj_type = 'VIEW' if mat == 'view' else 'TABLE' %}
-                    {% if db not in cross_domain_by_db %}
-                        {% do cross_domain_by_db.update({db: []}) %}
+                    {# Ephemeral models produce no physical relation. Sending
+                       them into the by-domain proc would fail with 002003 the
+                       first time GRANT SELECT ON TABLE ... hits the target.
+                       Collect the names for a single roll-up log below and
+                       skip the manifest entry. #}
+                    {% if mat == 'ephemeral' %}
+                        {% do skipped_ephemeral.append(node.name) %}
+                    {% else %}
+                        {% set db = node.database | upper %}
+                        {# Normalize ephemeral env suffixes back to the production database name.
+                           Split from the LEFT with fixed segment offsets — the previous
+                           `db.split('_PR_')[0]` yields '' for real PR DB names like
+                           `_PR_67_FIN_CON` (they start with `_PR_`, so the first token is empty).
+                             _PR_{N}_{DOMAIN}_{LAYER} -> parts[3:] = [DOMAIN, LAYER] -> DOMAIN_LAYER
+                             {DOMAIN}_{LAYER}_PD      -> strip trailing _PD
+                             {DOMAIN}_{LAYER}         -> unchanged (prod) #}
+                        {% if db.startswith('_PR_') %}
+                            {% set parts = db.split('_') %}
+                            {% set db = parts[3:] | join('_') %}
+                        {% elif db.endswith('_PD') %}
+                            {% set db = db[:-3] %}
+                        {% endif %}
+                        {% set obj_type = 'VIEW' if mat == 'view' else 'TABLE' %}
+                        {% if db not in cross_domain_by_db %}
+                            {% do cross_domain_by_db.update({db: []}) %}
+                        {% endif %}
+                        {% do cross_domain_by_db[db].append({
+                            'schema': node.schema | upper,
+                            'name':   (node.config.get('alias') or node.name) | upper,
+                            'type':   obj_type
+                        }) %}
                     {% endif %}
-                    {% do cross_domain_by_db[db].append({
-                        'schema': node.schema | upper,
-                        'name':   (node.config.get('alias') or node.name) | upper,
-                        'type':   obj_type
-                    }) %}
                 {% endif %}
             {% endif %}
         {% endfor %}
+
+        {% if skipped_ephemeral | length > 0 %}
+            {{ log(
+                "[cross_domain_grants] SKIPPED " ~ skipped_ephemeral | length
+                ~ " ephemeral CROSS_DOMAIN model(s): " ~ skipped_ephemeral | join(', ')
+                ~ " — ephemeral models produce no physical relation and cannot receive grants.",
+                info=true
+            ) }}
+        {% endif %}
 
         {# --------------------------------------------------------
            Step 2: Call GRANT_CROSS_DOMAIN_READ_ACCESS_BY_DOMAIN once per
@@ -729,9 +787,12 @@
                 {# ── PUSH/MERGE (production): call the proc once per domain ── #}
                 {# Role switch: the grant proc must run as {domain}_DEPLOY_CON,
                 not {domain}_DEPLOY_CUR. Switch once for the whole loop and
-                always restore the session role afterwards. #}
+                always restore the session role afterwards.
+                get_tagging_role requires a database name to infer the CUR/CON
+                layer; pass target.database so a CUR-session tagging CON-layer
+                objects correctly switches to the CON deploy role. #}
                 {% set original_role = target.role | upper %}
-                {% set grant_role = cp_dbt_standard_package.get_tagging_role() %}
+                {% set grant_role = cp_dbt_standard_package.get_tagging_role(target.database) %}
                 {% if grant_role %}
                     {{ log(
                         "[cross_domain_grants] Switching role " ~ original_role
@@ -750,10 +811,14 @@
                         ~ " | role: " ~ (grant_role if grant_role else original_role),
                         info=true
                     ) }}
+                    {# Snowflake single-quoted string literal escape is a doubled
+                       apostrophe (''), not a backslash. The prior `\'` escape
+                       leaves a raw ' inside the literal and breaks the payload
+                       whenever an object name contains an apostrophe. #}
                     {% set call_sql %}
                         CALL OPS_CUR.UTIL_COMMON.GRANT_CROSS_DOMAIN_READ_ACCESS_BY_DOMAIN(
                             '{{ domain_db }}',
-                            '{{ json_payload | replace("'", "\'") }}')
+                            '{{ json_payload | replace("'", "''") }}')
                     {% endset %}
                     {% do run_query(call_sql) %}
                 {% endfor %}
