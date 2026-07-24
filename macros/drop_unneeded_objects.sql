@@ -68,13 +68,21 @@
   {% set current_model_type_fqns = [] %} {# SCHEMA.NAME.TYPE triples #}
 
   {% for node in graph.nodes.values()
-     | selectattr("resource_type", "in", ["model", "seed", "snapshot"]) %}
+     | selectattr("resource_type", "in", ["model", "seed", "snapshot"])
+     | rejectattr("config.materialized", "equalto", "semantic_view") %}
     {% set node_schema = node.schema | upper %}
     {% set node_name   = node.name   | upper %}
     {# Normalize dbt materialization → Snowflake relation_type.
        dynamic_table is included because dynamic tables appear as 'BASE TABLE'
        in information_schema.tables (DPB-2494), so without normalization every
-       dynamic table would look like a materialization mismatch and be dropped. #}
+       dynamic table would look like a materialization mismatch and be dropped.
+       semantic_view is excluded via rejectattr above — SV models materialize
+       into information_schema.semantic_views (not .tables), so their FQNs in
+       this allowlist would protect nothing physical and, in an SV-only graph,
+       would leave the allowlist devoid of any real-table names — causing
+       every real table/view to be flagged as an orphan and mass-dropped.
+       Cleanup of orphan SVs is owned by dbt-common's
+       drop_orphaned_semantic_views.py step (see docstring). #}
     {% set eff_type = node.config.materialized
         | replace("seed",          "table")
         | replace("incremental",   "table")
@@ -88,6 +96,25 @@
 {% endif %}
 
 {% if execute %}
+
+{# ── Safety: refuse to run cleanup with an empty allowlist ──────────────────
+   If current_model_fqns is empty (project has zero non-SV model/seed/snapshot
+   nodes), the NOT IN clauses below would flag EVERY real table/view in the
+   database as an orphan and mass-drop the DB. This can happen legitimately
+   during a package parse before consumers define any models, an SV-only
+   project, or a mis-configured --select run.
+
+   Skip both cleanup queries entirely in that case — this matches the
+   pre-Fix-1.2 behavior of "no DROPs on empty allowlist" without depending on
+   a SQL compilation error to protect us. #}
+{% if current_model_fqns | length == 0 %}
+  {{ log(
+      "drop_unneeded_objects: SKIPPED — allowlist is empty (no model/seed/snapshot"
+      ~ " nodes after excluding semantic_view). Refusing to run orphan cleanup"
+      ~ " against " ~ target.database ~ " to prevent mass DROP of real objects.",
+      True
+  ) }}
+{% else %}
 
 -- ── Query 1: Drop objects not present in the dbt project at all ─────────────
 -- Uses SCHEMA.NAME FQN matching to avoid schema-blind false protection.
@@ -110,18 +137,10 @@
             {%- endfor -%})
           and table_name != 'DBT_STATE'
           and concat_ws('.', table_schema, table_name) not in
-            ({#- Sentinel guard: emit an unmatchable FQN when the allowlist is
-                 empty, so that NOT IN () never produces a SQL compilation error.
-                 The sentinel string cannot be produced by concat_ws (real values
-                 always contain a '.'), so it cannot cause false negatives. -#}
-             {%- if current_model_fqns | length == 0 -%}
-                 '__CP_SENTINEL_NEVER_MATCHES__'
-             {%- else -%}
-                 {%- for fqn in current_model_fqns -%}
-                     '{{ fqn }}'
-                     {%- if not loop.last -%},{%- endif -%}
-                 {%- endfor -%}
-             {%- endif -%})
+            ({%- for fqn in current_model_fqns -%}
+                '{{ fqn }}'
+                {%- if not loop.last -%},{%- endif -%}
+            {%- endfor -%})
       )
       select
         'DROP ' || relation_type || ' IF EXISTS ' || relation_name || ';' as drop_commands
@@ -165,16 +184,10 @@
         from
           tab_vw_to_drop
         where sf_schema_tabnm_type not in
-            ({#- Sentinel guard: same rationale as Query 1 — an empty allowlist
-                 would collapse into NOT IN () and fail SQL compilation. -#}
-             {%- if current_model_type_fqns | length == 0 -%}
-                 '__CP_SENTINEL_NEVER_MATCHES__'
-             {%- else -%}
-                 {%- for fqn_type in current_model_type_fqns -%}
-                     '{{ fqn_type }}'
-                     {%- if not loop.last -%},{%- endif -%}
-                 {%- endfor -%}
-             {%- endif -%})
+            ({%- for fqn_type in current_model_type_fqns -%}
+                '{{ fqn_type }}'
+                {%- if not loop.last -%},{%- endif -%}
+            {%- endfor -%})
       )
 
       select
@@ -216,6 +229,8 @@
 {% else %}
   {% do log('No objects to clean.', True) %}
 {% endif %}
+
+{% endif %}{# current_model_fqns empty-allowlist safety guard #}
 
 {% endif %}{# execute — queries 1 & 2 #}
 
