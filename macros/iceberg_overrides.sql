@@ -7,31 +7,67 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
 #}
 
 {# ============================================================================
-   SECTION 1: THE DDL NUKE (Bypass YAML Contract Injection)
+   SECTION 1: DDL CONTRACT BYPASS (Iceberg-only)
+   Snowflake Iceberg tables do not support inline column-level constraints
+   in DDL. For Iceberg models we return empty; for everything else we
+   delegate to dbt's native implementation so `contract: enforced` works
+   on regular Snowflake tables (e.g. analytics-md's 50+ contracted models).
    ============================================================================ #}
 
+{%- macro _cp_is_iceberg() -%}
+    {%- set result = (
+        config.get('catalog_name') is not none
+        or config.get('table_format', '') | lower == 'iceberg'
+    ) -%}
+    {{ return(result) }}
+{%- endmacro -%}
+
 {% macro get_table_columns_and_constraints() %}
-    {{ return('') }}
+    {% if cp_dbt_standard_package._cp_is_iceberg() %}
+        {{ return('') }}
+    {% else %}
+        {{ return(dbt.get_table_columns_and_constraints()) }}
+    {% endif %}
 {% endmacro %}
 
 {% macro default__get_table_columns_and_constraints() %}
-    {{ return('') }}
+    {% if cp_dbt_standard_package._cp_is_iceberg() %}
+        {{ return('') }}
+    {% else %}
+        {{ return(dbt.default__get_table_columns_and_constraints()) }}
+    {% endif %}
 {% endmacro %}
 
 {% macro snowflake__get_table_columns_and_constraints() %}
-    {{ return('') }}
+    {% if cp_dbt_standard_package._cp_is_iceberg() %}
+        {{ return('') }}
+    {% else %}
+        {{ return(dbt.snowflake__get_table_columns_and_constraints()) }}
+    {% endif %}
 {% endmacro %}
 
 {% macro render_raw_columns_constraints(raw_columns) %}
-    {{ return('') }}
+    {% if cp_dbt_standard_package._cp_is_iceberg() %}
+        {{ return('') }}
+    {% else %}
+        {{ return(dbt.render_raw_columns_constraints(raw_columns)) }}
+    {% endif %}
 {% endmacro %}
 
 {% macro default__render_raw_columns_constraints(raw_columns) %}
-    {{ return('') }}
+    {% if cp_dbt_standard_package._cp_is_iceberg() %}
+        {{ return('') }}
+    {% else %}
+        {{ return(dbt.default__render_raw_columns_constraints(raw_columns)) }}
+    {% endif %}
 {% endmacro %}
 
 {% macro snowflake__render_raw_columns_constraints(raw_columns) %}
-    {{ return('') }}
+    {% if cp_dbt_standard_package._cp_is_iceberg() %}
+        {{ return('') }}
+    {% else %}
+        {{ return(dbt.snowflake__render_raw_columns_constraints(raw_columns)) }}
+    {% endif %}
 {% endmacro %}
 
 
@@ -104,12 +140,22 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
 {%- endmacro %}
 
 {% macro snowflake__get_create_view_as_sql(relation, sql) -%}
-    {% set safe_sql = cp_dbt_standard_package.iceberg_type_safe_wrap(sql) %}
-    {{ return(dbt.snowflake__create_view_as(relation, safe_sql)) }}
+    {%- set is_iceberg = (config.get('catalog_name') is not none or config.get('table_format', '') | lower == 'iceberg') -%}
+    {% if is_iceberg %}
+        {% set safe_sql = cp_dbt_standard_package.iceberg_type_safe_wrap(sql) %}
+        {{ return(dbt.snowflake__create_view_as(relation, safe_sql)) }}
+    {% else %}
+        {{ return(dbt.snowflake__create_view_as(relation, sql)) }}
+    {% endif %}
 {%- endmacro %}
 
 {% macro snowflake__get_create_table_as_sql(temporary, relation, sql) -%}
-    {% set safe_sql = cp_dbt_standard_package.iceberg_type_safe_wrap(sql) %}
+    {%- set is_iceberg = (config.get('catalog_name') is not none or config.get('table_format', '') | lower == 'iceberg') -%}
+    {% if is_iceberg %}
+        {% set safe_sql = cp_dbt_standard_package.iceberg_type_safe_wrap(sql) %}
+    {% else %}
+        {% set safe_sql = sql %}
+    {% endif %}
 
     {%- if 'snowflake__get_create_table_as_sql' in dbt -%}
         {{ return(dbt.snowflake__get_create_table_as_sql(temporary, relation, safe_sql)) }}
@@ -207,19 +253,36 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
 
 
 {# ============================================================================
-   SECTION 4: CONTRACT MISMATCH BYPASS (Silence Python validation)
+   SECTION 4: CONTRACT MISMATCH BYPASS (Iceberg-only)
+   dbt's Python-level contract validation compares columns returned by the
+   model against the YAML contract definition. Iceberg tables recast some
+   types (e.g. TIMESTAMP_TZ → TIMESTAMP_LTZ), so this comparison always
+   fails. We bypass ONLY for Iceberg models; non-Iceberg models retain
+   full contract validation.
    ============================================================================ #}
 
 {% macro get_assert_columns_equivalent(ddl_dict) %}
-    {{ return('') }}
+    {% if cp_dbt_standard_package._cp_is_iceberg() %}
+        {{ return('') }}
+    {% else %}
+        {{ return(dbt.get_assert_columns_equivalent(ddl_dict)) }}
+    {% endif %}
 {% endmacro %}
 
 {% macro default__get_assert_columns_equivalent(ddl_dict) %}
-    {{ return('') }}
+    {% if cp_dbt_standard_package._cp_is_iceberg() %}
+        {{ return('') }}
+    {% else %}
+        {{ return(dbt.default__get_assert_columns_equivalent(ddl_dict)) }}
+    {% endif %}
 {% endmacro %}
 
 {% macro snowflake__get_assert_columns_equivalent(ddl_dict) %}
-    {{ return('') }}
+    {% if cp_dbt_standard_package._cp_is_iceberg() %}
+        {{ return('') }}
+    {% else %}
+        {{ return(dbt.snowflake__get_assert_columns_equivalent(ddl_dict)) }}
+    {% endif %}
 {% endmacro %}
 
 

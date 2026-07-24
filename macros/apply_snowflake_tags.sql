@@ -125,9 +125,10 @@
 
 {# ============================================================
    APPLY TAG TO MODEL
-   Supports: .strip() whitespace handling, optional relation_type (skip DB query)
+   Supports: .strip() whitespace handling, optional relation_type (skip DB query),
+   optional is_iceberg (skip adapter.get_relation query when caller already knows)
    ============================================================ #}
-{% macro apply_tag(database_nm, schema, identifier, tag_name, tag_value, relation_type=none) %}
+{% macro apply_tag(database_nm, schema, identifier, tag_name, tag_value, relation_type=none, is_iceberg=none) %}
 
     {% set available_tags = cp_dbt_standard_package.get_snowflake_tags(show_log=false) %}
     {% set config = cp_dbt_standard_package.get_tag_config() %}
@@ -170,17 +171,23 @@
         {% set tag_value = val_ns.matched_value %}
     {% endif %}
 
-    {# Identify relation and detect Iceberg format #}
-    {% set relation = adapter.get_relation(database_nm, schema, identifier) %}
-    {% if not relation_type %}
-        {% set relation_type = relation.type | upper if relation else 'TABLE' %}
+    {# Identify relation type and Iceberg format.
+       When the caller (tag_models_on_run_end) passes both relation_type and
+       is_iceberg, we skip the adapter.get_relation() Snowflake metadata query
+       entirely — saving one network round-trip per tag application.
+       Fallback: if is_iceberg is not provided, query Snowflake as before. #}
+    {% if is_iceberg is none or not relation_type %}
+        {% set relation = adapter.get_relation(database_nm, schema, identifier) %}
+        {% if not relation_type %}
+            {% set relation_type = relation.type | upper if relation else 'TABLE' %}
+        {% endif %}
+        {% if is_iceberg is none %}
+            {% set is_iceberg = (relation.is_iceberg_format if relation else false) %}
+        {% endif %}
     {% endif %}
 
     {# Iceberg tables require ALTER ICEBERG TABLE syntax #}
-    {% set ddl_prefix = '' %}
-    {% if relation and relation.is_iceberg_format %}
-        {% set ddl_prefix = 'ICEBERG ' %}
-    {% endif %}
+    {% set ddl_prefix = 'ICEBERG ' if is_iceberg else '' %}
     {# --------------------------------------------------------
        Role switch: tag DDL must run as {domain}_DEPLOY_CON,
        not {domain}_DEPLOY_CUR. Switch only if needed, and
@@ -213,9 +220,10 @@
 
 {# ============================================================
    APPLY COLUMN TAG
-   Supports: .strip() whitespace handling, optional relation_type (skip DB query)
+   Supports: .strip() whitespace handling, optional relation_type (skip DB query),
+   optional is_iceberg (skip adapter.get_relation query when caller already knows)
    ============================================================ #}
-{% macro apply_column_tag(database_nm, schema, identifier, column_name, tag_name, tag_value, relation_type=none) %}
+{% macro apply_column_tag(database_nm, schema, identifier, column_name, tag_name, tag_value, relation_type=none, is_iceberg=none) %}
 
     {% set available_tags = cp_dbt_standard_package.get_snowflake_tags(show_log=false) %}
     {% set config = cp_dbt_standard_package.get_tag_config() %}
@@ -256,17 +264,19 @@
         {% set tag_value = val_ns.matched_value %}
     {% endif %}
 
-    {# Identify relation and detect Iceberg format #}
-    {% set relation = adapter.get_relation(database_nm, schema, identifier) %}
-    {% if not relation_type %}
-        {% set relation_type = relation.type | upper if relation else 'TABLE' %}
+    {# Identify relation type and Iceberg format — same optimization as apply_tag. #}
+    {% if is_iceberg is none or not relation_type %}
+        {% set relation = adapter.get_relation(database_nm, schema, identifier) %}
+        {% if not relation_type %}
+            {% set relation_type = relation.type | upper if relation else 'TABLE' %}
+        {% endif %}
+        {% if is_iceberg is none %}
+            {% set is_iceberg = (relation.is_iceberg_format if relation else false) %}
+        {% endif %}
     {% endif %}
 
     {# Iceberg tables require ALTER ICEBERG TABLE syntax #}
-    {% set ddl_prefix = '' %}
-    {% if relation and relation.is_iceberg_format %}
-        {% set ddl_prefix = 'ICEBERG ' %}
-    {% endif %}
+    {% set ddl_prefix = 'ICEBERG ' if is_iceberg else '' %}
     {# --------------------------------------------------------
        Role switch: tag DDL must run as {domain}_DEPLOY_CON,
        not {domain}_DEPLOY_CUR. Switch only if needed, and
@@ -328,7 +338,13 @@
                 {% set mat = node.config.materialized %}
                 {% set rel_type = 'VIEW' if mat == 'view' else 'TABLE' %}
 
-                {{ log("Processing model: " ~ model_database ~ "." ~ model_schema ~ "." ~ model_name, info=true) }}
+                {# Detect Iceberg from dbt config — avoids querying Snowflake
+                   metadata (adapter.get_relation) for every tag application.
+                   A model is Iceberg if table_format='iceberg' or catalog_name is set. #}
+                {% set model_is_iceberg = (node.config.get('table_format', '') == 'iceberg')
+                    or (node.config.get('catalog_name', '') | length > 0) %}
+
+                {{ log("Processing model: " ~ model_database ~ "." ~ model_schema ~ "." ~ model_name ~ (" [iceberg]" if model_is_iceberg else ""), info=true) }}
 
                 {# Table-level tags — check both config.snowflake_tags and config.meta.snowflake_tags #}
                 {% set model_tags = node.config.get('snowflake_tags', {}) %}
@@ -336,11 +352,11 @@
 
                 {% if meta_tags %}
                     {% for tag_name, tag_value in meta_tags.items() %}
-                        {{ cp_dbt_standard_package.apply_tag(model_database, model_schema, model_name, tag_name, tag_value, rel_type) }}
+                        {{ cp_dbt_standard_package.apply_tag(model_database, model_schema, model_name, tag_name, tag_value, rel_type, model_is_iceberg) }}
                     {% endfor %}
                 {% elif model_tags %}
                     {% for tag_name, tag_value in model_tags.items() %}
-                        {{ cp_dbt_standard_package.apply_tag(model_database, model_schema, model_name, tag_name, tag_value, rel_type) }}
+                        {{ cp_dbt_standard_package.apply_tag(model_database, model_schema, model_name, tag_name, tag_value, rel_type, model_is_iceberg) }}
                     {% endfor %}
                 {% endif %}
 
@@ -348,7 +364,7 @@
                 {% for col_name, col in node.columns.items() %}
                     {% if col.meta is defined and col.meta.snowflake_tags is defined %}
                         {% for tag_name, tag_value in col.meta.snowflake_tags.items() %}
-                            {{ cp_dbt_standard_package.apply_column_tag(model_database, model_schema, model_name, col_name, tag_name, tag_value, rel_type) }}
+                            {{ cp_dbt_standard_package.apply_column_tag(model_database, model_schema, model_name, col_name, tag_name, tag_value, rel_type, model_is_iceberg) }}
                         {% endfor %}
                     {% endif %}
                 {% endfor %}
@@ -606,7 +622,7 @@
 {% macro call_cross_domain_read_proc() %}
     {% if execute %}
 
-        {# ---------------------f-----------------------------------
+        {# --------------------------------------------------------
            Role guard: fire for DEPLOY roles (CI/CD) and ELT roles (Airflow).
            Both can rebuild models (DROP + CREATE) which wipes all Snowflake
            object-level grants including CROSS_DOMAIN_READ.SELECT. The proc must
