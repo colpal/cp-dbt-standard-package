@@ -37,14 +37,16 @@ Non-Iceberg models fall through to the original dbt logic unchanged.
 
 ### Section 3 — Materialization Overrides (Safe Temp Table Routing)
 
-**Macros:** `snowflake__create_table_as`, `snowflake__create_view_as`, `snowflake__get_create_view_as_sql`, `snowflake__get_create_table_as_sql`, `snowflake__get_create_iceberg_table_as_sql`, `snowflake__create_iceberg_table_as`
+**Macros:** `snowflake__create_table_as`, `snowflake__get_create_table_as_sql`, `snowflake__get_create_iceberg_table_as_sql`, `snowflake__create_iceberg_table_as`
 
-These macros intercept every DDL path dbt uses to materialize a model. The pattern for table materializations is:
+These macros intercept every DDL path dbt uses to materialize an Iceberg table model. The pattern is:
 
 1. Run `iceberg_type_safe_wrap(compiled_code)` to get a cast-safe SELECT.
-2. Pass that safe SQL directly into dbt's native table/view creation macros as the body of the real `CREATE ICEBERG <TABLE>` DDL.
+2. Pass that safe SQL directly into dbt's native table creation macros as the body of the real `CREATE ICEBERG TABLE` DDL.
 
-This two-step approach ensures type coercions happen in a different SQL before being read into the strict Iceberg target.
+This two-step approach ensures type coercions happen in a separate SELECT before being read into the strict Iceberg target.
+
+> **View materializations are intentionally left to dbt-core.** Snowflake has no Iceberg views, so `snowflake__create_view_as` / `snowflake__get_create_view_as_sql` are not overridden — the default macros are already correct.
 
 ### Section 3B & 3C — Incremental Merge & Alter Bypass
 Macros: snowflake__get_merge_sql, snowflake__alter_column_type
@@ -71,7 +73,7 @@ This is the core engine. It dynamically introspects the output columns of any co
 
 #### How It Works
 
-1. **Create introspection view** — executes `CREATE OR REPLACE VIEW <temp_view> AS (<compiled_code>)` in the current schema. The closing `)` is placed on its own line to prevent trailing SQL comments in `compiled_code` from commenting it out.
+1. **Create introspection view** — executes `CREATE OR REPLACE TEMPORARY VIEW <temp_view> AS (<compiled_code>)` in the current session. The `TEMPORARY` keyword scopes the view to the dbt session so a run that aborts between step 1 and step 4 does not leak a permanent object. The closing `)` is placed on its own line to prevent trailing SQL comments in `compiled_code` from commenting it out.
 2. **Describe the view** — runs `DESCRIBE VIEW <temp_view>` to get the resolved column names and types.
 3. **Classify columns** — builds a list of columns that need casting and a complete list of all columns with their types.
 4. **Drop the view** — executes `DROP VIEW IF EXISTS <temp_view>` immediately after introspection.
@@ -138,12 +140,6 @@ A trailing single-line comment at the end of `compiled_code` would have commente
 ### Does this affect temporary tables used by incremental models?
 
 No. `snowflake__create_table_as` skips the two-step wrap-and-cast path when `temporary=True`. Temporary staging relations for incremental models are regular Snowflake tables (not Iceberg), accept all types natively, and do not need type coercion.
-
----
-
-### What is the `__dbt_pre` table?
-
-A short-lived `TEMPORARY TABLE` created in the same session as the dbt run, named `<relation>__dbt_pre`. It holds the output of the cast-safe SELECT. The final `CREATE ICEBERG TABLE ... AS SELECT * FROM __dbt_pre` then reads from it. Being a temporary table it is automatically dropped at session end and does not persist.
 
 ---
 

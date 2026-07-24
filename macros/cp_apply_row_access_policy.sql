@@ -18,8 +18,18 @@
         {% set results_policy_list = [] %}
     {% endif %}
 
-    {%- set is_iceberg = config.get('catalog_name', '') | length > 0 -%}
-    {%- set alter_cmd = 'ALTER ICEBERG TABLE' if is_iceberg else 'ALTER TABLE IF EXISTS' -%}
+    {#- Use the shared cp_is_iceberg() helper (defined in iceberg_overrides.sql)
+        so RAP application uses the exact same Iceberg detection rule as the
+        materialization / tagging / contract-bypass paths. The prior local
+        `catalog_name`-only check missed models flagged with
+        `table_format='iceberg'` and could emit `ALTER TABLE` on an Iceberg
+        relation (Snowflake requires `ALTER ICEBERG TABLE`). -#}
+    {%- set is_iceberg = cp_dbt_standard_package.cp_is_iceberg() -%}
+    {#- Both ALTER variants get IF EXISTS so the macro is idempotent when the
+        RAP is applied on-run-end but the target relation has not yet been
+        materialized (e.g. a first-time PR build where the RAP macro compiles
+        before the referenced downstream table is created). -#}
+    {%- set alter_cmd = 'ALTER ICEBERG TABLE IF EXISTS' if is_iceberg else 'ALTER TABLE IF EXISTS' -%}
 
     {% if not results_policy_list %}
         {{ alter_cmd }} {{ table_name }}

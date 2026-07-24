@@ -14,7 +14,11 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
    on regular Snowflake tables (e.g. analytics-md's 50+ contracted models).
    ============================================================================ #}
 
-{%- macro _cp_is_iceberg() -%}
+{#- Canonical Iceberg detection helper. Public so callers outside this file
+    (e.g. cp_apply_row_access_policy.sql) can share the exact same rule and
+    avoid drift between "catalog_name is set" and "table_format='iceberg'"
+    interpretations. -#}
+{%- macro cp_is_iceberg() -%}
     {%- set result = (
         config.get('catalog_name') is not none
         or config.get('table_format', '') | lower == 'iceberg'
@@ -23,7 +27,7 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
 {%- endmacro -%}
 
 {% macro get_table_columns_and_constraints() %}
-    {% if cp_dbt_standard_package._cp_is_iceberg() %}
+    {% if cp_dbt_standard_package.cp_is_iceberg() %}
         {{ return('') }}
     {% else %}
         {{ return(dbt.get_table_columns_and_constraints()) }}
@@ -31,7 +35,7 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
 {% endmacro %}
 
 {% macro default__get_table_columns_and_constraints() %}
-    {% if cp_dbt_standard_package._cp_is_iceberg() %}
+    {% if cp_dbt_standard_package.cp_is_iceberg() %}
         {{ return('') }}
     {% else %}
         {{ return(dbt.default__get_table_columns_and_constraints()) }}
@@ -39,7 +43,7 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
 {% endmacro %}
 
 {% macro snowflake__get_table_columns_and_constraints() %}
-    {% if cp_dbt_standard_package._cp_is_iceberg() %}
+    {% if cp_dbt_standard_package.cp_is_iceberg() %}
         {{ return('') }}
     {% else %}
         {{ return(dbt.snowflake__get_table_columns_and_constraints()) }}
@@ -47,7 +51,7 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
 {% endmacro %}
 
 {% macro render_raw_columns_constraints(raw_columns) %}
-    {% if cp_dbt_standard_package._cp_is_iceberg() %}
+    {% if cp_dbt_standard_package.cp_is_iceberg() %}
         {{ return('') }}
     {% else %}
         {{ return(dbt.render_raw_columns_constraints(raw_columns)) }}
@@ -55,7 +59,7 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
 {% endmacro %}
 
 {% macro default__render_raw_columns_constraints(raw_columns) %}
-    {% if cp_dbt_standard_package._cp_is_iceberg() %}
+    {% if cp_dbt_standard_package.cp_is_iceberg() %}
         {{ return('') }}
     {% else %}
         {{ return(dbt.default__render_raw_columns_constraints(raw_columns)) }}
@@ -63,7 +67,7 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
 {% endmacro %}
 
 {% macro snowflake__render_raw_columns_constraints(raw_columns) %}
-    {% if cp_dbt_standard_package._cp_is_iceberg() %}
+    {% if cp_dbt_standard_package.cp_is_iceberg() %}
         {{ return('') }}
     {% else %}
         {{ return(dbt.snowflake__render_raw_columns_constraints(raw_columns)) }}
@@ -116,12 +120,13 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
 {# NOTE: Final tables are created directly from safe_sql #}
 
 {% macro snowflake__create_table_as(temporary, relation, compiled_code, language='sql') -%}
-    {%- set is_iceberg = (
-        config.get('catalog_name') is not none
-        or config.get('table_format', '') | lower == 'iceberg'
-    ) -%}
+    {%- set is_iceberg = cp_dbt_standard_package.cp_is_iceberg() -%}
 
-    {% if language == 'sql' and is_iceberg %}
+    {#- Never wrap the incremental-staging TEMPORARY table: it lives inside a
+        single session, cannot be an Iceberg table, and does not need the
+        introspection-based casting logic. Wrapping it would round-trip
+        types through TO_JSON/VARCHAR and materially widen the staging table. -#}
+    {% if language == 'sql' and is_iceberg and not temporary %}
         {% set safe_sql = cp_dbt_standard_package.iceberg_type_safe_wrap(compiled_code) %}
         {{ return(dbt.snowflake__create_table_as(temporary, relation, safe_sql, language)) }}
     {% else %}
@@ -129,25 +134,9 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
     {% endif %}
 {%- endmacro %}
 
-{% macro snowflake__create_view_as(relation, sql) -%}
-    {%- set is_iceberg = (config.get('catalog_name') is not none or config.get('table_format', '') | lower == 'iceberg') -%}
-    {% if is_iceberg %}
-      {% set safe_sql = cp_dbt_standard_package.iceberg_type_safe_wrap(sql) %}
-      {{ return(dbt.snowflake__create_view_as(relation, safe_sql)) }}
-    {% else %}
-      {{ return(dbt.snowflake__create_view_as(relation, sql)) }}
-    {% endif %}
-{%- endmacro %}
-
-{% macro snowflake__get_create_view_as_sql(relation, sql) -%}
-    {%- set is_iceberg = (config.get('catalog_name') is not none or config.get('table_format', '') | lower == 'iceberg') -%}
-    {% if is_iceberg %}
-        {% set safe_sql = cp_dbt_standard_package.iceberg_type_safe_wrap(sql) %}
-        {{ return(dbt.snowflake__create_view_as(relation, safe_sql)) }}
-    {% else %}
-        {{ return(dbt.snowflake__create_view_as(relation, sql)) }}
-    {% endif %}
-{%- endmacro %}
+{#- View overrides (snowflake__create_view_as / snowflake__get_create_view_as_sql)
+    were removed: Snowflake has no Iceberg views, so the default dbt macros are
+    already correct. Keeping stub overrides only added a needless indirection. -#}
 
 {% macro snowflake__get_create_table_as_sql(temporary, relation, sql) -%}
     {%- set is_iceberg = (config.get('catalog_name') is not none or config.get('table_format', '') | lower == 'iceberg') -%}
@@ -262,7 +251,7 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
    ============================================================================ #}
 
 {% macro get_assert_columns_equivalent(ddl_dict) %}
-    {% if cp_dbt_standard_package._cp_is_iceberg() %}
+    {% if cp_dbt_standard_package.cp_is_iceberg() %}
         {{ return('') }}
     {% else %}
         {{ return(dbt.get_assert_columns_equivalent(ddl_dict)) }}
@@ -270,7 +259,7 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
 {% endmacro %}
 
 {% macro default__get_assert_columns_equivalent(ddl_dict) %}
-    {% if cp_dbt_standard_package._cp_is_iceberg() %}
+    {% if cp_dbt_standard_package.cp_is_iceberg() %}
         {{ return('') }}
     {% else %}
         {{ return(dbt.default__get_assert_columns_equivalent(ddl_dict)) }}
@@ -278,7 +267,7 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
 {% endmacro %}
 
 {% macro snowflake__get_assert_columns_equivalent(ddl_dict) %}
-    {% if cp_dbt_standard_package._cp_is_iceberg() %}
+    {% if cp_dbt_standard_package.cp_is_iceberg() %}
         {{ return('') }}
     {% else %}
         {{ return(dbt.snowflake__get_assert_columns_equivalent(ddl_dict)) }}
@@ -293,9 +282,12 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
 {% macro iceberg_type_safe_wrap(compiled_code) %}
     {%- set temp_view = make_temp_relation(this).incorporate(type='view') -%}
 
+    {#- TEMPORARY VIEW is session-scoped and auto-cleaned by Snowflake when the
+        session ends. This prevents the introspection view from leaking as a
+        permanent object if the run aborts between CREATE VIEW and DROP VIEW. -#}
     {% call statement('create_type_introspection_view') %}
         {{ config.get('sql_header', '') }}
-        CREATE OR REPLACE VIEW {{ temp_view }} AS (
+        CREATE OR REPLACE TEMPORARY VIEW {{ temp_view }} AS (
         {{ compiled_code }}
         )
     {% endcall %}
