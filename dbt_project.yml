@@ -26,19 +26,6 @@ clean-targets:         # directories to be removed by `dbt clean`
 
 models:
   +transient: false
-  # Generated semantic view models — CI-generated at run time, never committed to GitHub.
-  # Exclude from evaluator checks (no tests/docs expected for generated files).
-  semantic_views_generated:
-    +tags:
-      - semantic_view_generated
-    +meta:
-      generated_by: generate_semantic_view
-
-vars:
-  # dbt_project_evaluator: exclude CI-generated semantic view model path
-  # from ALL evaluator checks (naming, docs, tests, direct joins, etc.).
-  # Analytics repos write generated files to models/semantic_views_generated/.
-  paths_to_exclude: ["models/semantic_views_generated"]
 
 # Automatically reapply Snowflake tags after every dbt run (fixes tag loss on view recreation)
 on-run-end:

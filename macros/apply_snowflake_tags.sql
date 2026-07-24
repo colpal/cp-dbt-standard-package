@@ -452,6 +452,7 @@
            not rebuilt in this run but whose grants must remain active.
            -------------------------------------------------------- #}
         {% set certified_by_db = {} %}
+        {% set skipped_ephemeral = [] %}
 
         {% for node_id, node in graph.nodes.items() %}
             {% if node.resource_type == 'model' %}
@@ -475,9 +476,10 @@
 
                     {# Map dbt materialization -> Snowflake object type.
                        incremental / table -> TABLE; view -> VIEW.
-                       ephemeral models produce no physical object -- skip. #}
+                       ephemeral models produce no physical object -- record
+                       the name for a single roll-up log line below and skip. #}
                     {% if mat == 'ephemeral' %}
-                        {# nothing to grant -- ephemeral models are inlined #}
+                        {% do skipped_ephemeral.append(node.name) %}
                     {% else %}
                         {% set obj_type = 'VIEW' if mat == 'view' else 'TABLE' %}
 
@@ -500,6 +502,15 @@
                 {% endif %}
             {% endif %}
         {% endfor %}
+
+        {% if skipped_ephemeral | length > 0 %}
+            {{ log(
+                "[cert_grants] SKIPPED " ~ skipped_ephemeral | length
+                ~ " ephemeral IS_CERTIFIED model(s): " ~ skipped_ephemeral | join(', ')
+                ~ " — ephemeral models produce no physical relation and cannot receive grants.",
+                info=true
+            ) }}
+        {% endif %}
 
         {# --------------------------------------------------------
            Step 2: Call GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN once per
@@ -546,10 +557,14 @@
                         ~ " | role: " ~ target.role,
                         info=true
                     ) }}
+                    {# Snowflake single-quoted string literal escape is a doubled
+                       apostrophe (''), not a backslash. The prior '\'' escape
+                       leaves a raw ' inside the literal and breaks the payload
+                       whenever an object name contains an apostrophe. #}
                     {% set call_sql %}
                         CALL OPS_CUR.UTIL_COMMON.GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN(
                             '{{ domain_db }}',
-                            '{{ json_payload | replace("'", "\'") }}'
+                            '{{ json_payload | replace("'", "''") }}'
                         )
                     {% endset %}
                     {% do run_query(call_sql) %}
@@ -639,6 +654,7 @@
            not rebuilt in this run but whose grants must remain active.
            -------------------------------------------------------- #}
         {% set cross_domain_by_db = {} %}
+        {% set skipped_ephemeral = [] %}
 
         {% for node_id, node in graph.nodes.items() %}
             {% if node.resource_type == 'model' %}
@@ -662,9 +678,10 @@
 
                     {# Map dbt materialization -> Snowflake object type.
                        incremental / table -> TABLE; view -> VIEW.
-                       ephemeral models produce no physical object -- skip. #}
+                       ephemeral models produce no physical object -- record
+                       the name for a single roll-up log line below and skip. #}
                     {% if mat == 'ephemeral' %}
-                        {# nothing to grant -- ephemeral models are inlined #}
+                        {% do skipped_ephemeral.append(node.name) %}
                     {% else %}
                         {% set obj_type = 'VIEW' if mat == 'view' else 'TABLE' %}
 
@@ -687,6 +704,15 @@
                 {% endif %}
             {% endif %}
         {% endfor %}
+
+        {% if skipped_ephemeral | length > 0 %}
+            {{ log(
+                "[cross_domain_grants] SKIPPED " ~ skipped_ephemeral | length
+                ~ " ephemeral CROSS_DOMAIN model(s): " ~ skipped_ephemeral | join(', ')
+                ~ " — ephemeral models produce no physical relation and cannot receive grants.",
+                info=true
+            ) }}
+        {% endif %}
 
         {# --------------------------------------------------------
            Step 2: Call GRANT_CROSS_DOMAIN_READ_ACCESS_BY_DOMAIN once per
@@ -733,10 +759,14 @@
                         ~ " | role: " ~ target.role,
                         info=true
                     ) }}
+                    {# Snowflake single-quoted string literal escape is a doubled
+                       apostrophe (''), not a backslash. The prior '\'' escape
+                       leaves a raw ' inside the literal and breaks the payload
+                       whenever an object name contains an apostrophe. #}
                     {% set call_sql %}
                         CALL OPS_CUR.UTIL_COMMON.GRANT_CROSS_DOMAIN_READ_ACCESS_BY_DOMAIN(
                             '{{ domain_db }}',
-                            '{{ json_payload | replace("'", "\'") }}'
+                            '{{ json_payload | replace("'", "''") }}'
                         )
                     {% endset %}
                     {% do run_query(call_sql) %}
