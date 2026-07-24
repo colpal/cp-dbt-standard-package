@@ -45,3 +45,4 @@ on-run-end:
   - "{% if 'SBX' not in target.database | upper and '_LAB_' not in target.database | upper %}{{ cp_dbt_standard_package.tag_models_from_results() }}{% endif %}"
   - "{% if 'SBX' not in target.database | upper and '_LAB_' not in target.database | upper %}{{ cp_dbt_standard_package.call_certified_read_proc() }}{% endif %}"
   - "{% if 'SBX' not in target.database | upper and '_LAB_' not in target.database | upper %}{{ cp_dbt_standard_package.call_cross_domain_read_proc() }}{% endif %}"
+
