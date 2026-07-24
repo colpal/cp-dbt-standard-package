@@ -424,10 +424,10 @@
 {% macro call_certified_read_proc() %}
     {% if execute %}
 
-        {# --------------------------------------------------------
+        {# ---------------------f-----------------------------------
            Role guard: fire for DEPLOY roles (CI/CD) and ELT roles (Airflow).
            Both can rebuild models (DROP + CREATE) which wipes all Snowflake
-           object-level grants including CERTIFIED_READ.SELECT. The proc must
+           object-level grants including CROSS_DOMAIN_READ.SELECT. The proc must
            run on-run-end to reapply grants immediately rather than waiting
            up to 60 min for the hourly GRANT_CERTIFIED_READ_ACCESS task.
 
@@ -451,66 +451,43 @@
            always contains the complete certified set, including models
            not rebuilt in this run but whose grants must remain active.
            -------------------------------------------------------- #}
-        {% set certified_by_db = {} %}
-        {% set skipped_ephemeral = [] %}
-
+        {% set certified_read_by_db = {} %}
         {% for node_id, node in graph.nodes.items() %}
             {% if node.resource_type == 'model' %}
-
-                {# Resolve IS_CERTIFIED from either tag location:
-                   - config.snowflake_tags (set via dbt model config)
-                   - config.meta.snowflake_tags (set via meta block) #}
+                {# Resolve CERTIFIED_READ from either tag location:
+                - config.snowflake_tags (set via dbt model config)
+                - config.meta.snowflake_tags (set via meta block) #}
                 {% set model_tags  = node.config.get('snowflake_tags', {}) %}
                 {% set meta_tags   = node.config.get('meta', {}).get('snowflake_tags', {}) %}
-
-                {% set is_certified = false %}
+                {% set certified_read = false %}
                 {% if model_tags.get('IS_CERTIFIED', '') | upper == 'TRUE' %}
-                    {% set is_certified = true %}
+                    {% set certified_read = true %}
                 {% elif meta_tags.get('IS_CERTIFIED', '') | upper == 'TRUE' %}
-                    {% set is_certified = true %}
+                    {% set certified_read = true %}
                 {% endif %}
-
-                {% if is_certified %}
-                    {% set db  = node.database | upper %}
-                    {% set mat = node.config.materialized %}
-
-                    {# Map dbt materialization -> Snowflake object type.
-                       incremental / table -> TABLE; view -> VIEW.
-                       ephemeral models produce no physical object -- record
-                       the name for a single roll-up log line below and skip. #}
-                    {% if mat == 'ephemeral' %}
-                        {% do skipped_ephemeral.append(node.name) %}
-                    {% else %}
-                        {% set obj_type = 'VIEW' if mat == 'view' else 'TABLE' %}
-
-                        {# Collect certified objects from production databases only.
-                           PR/PD databases are ephemeral and never hold prod grants. #}
-                        {% if '_PR_' not in db and not db.endswith('_PD') %}
-
-                            {% if db not in certified_by_db %}
-                                {% do certified_by_db.update({db: []}) %}
-                            {% endif %}
-
-                            {% do certified_by_db[db].append({
-                                'schema': node.schema | upper,
-                                'name':   (node.config.get('alias') or node.name) | upper,
-                                'type':   obj_type
-                            }) %}
-
-                        {% endif %}
+                {% if certified_read %}
+                    {% set db = node.database | upper %}
+                    {# Normalize ephemeral env suffixes back to the production database name:
+                    EX_CON_PD      -> EX_CON
+                    EX_CON_PR_123  -> EX_CON #}
+                    {% if '_PR_' in db %}
+                        {% set db = db.split('_PR_')[0] %}
+                    {% elif db.endswith('_PD') %}
+                        {% set db = db[:-3] %}
                     {% endif %}
+                    {% set mat = node.config.materialized %}
+                    {% set obj_type = 'VIEW' if mat == 'view' else 'TABLE' %}
+                    {% if db not in certified_read_by_db %}
+                        {% do certified_read_by_db.update({db: []}) %}
+                    {% endif %}
+                    {% do certified_read_by_db[db].append({
+                        'schema': node.schema | upper,
+                        'name':   (node.config.get('alias') or node.name) | upper,
+                        'type':   obj_type
+                    }) %}
                 {% endif %}
             {% endif %}
         {% endfor %}
-
-        {% if skipped_ephemeral | length > 0 %}
-            {{ log(
-                "[cert_grants] SKIPPED " ~ skipped_ephemeral | length
-                ~ " ephemeral IS_CERTIFIED model(s): " ~ skipped_ephemeral | join(', ')
-                ~ " — ephemeral models produce no physical relation and cannot receive grants.",
-                info=true
-            ) }}
-        {% endif %}
 
         {# --------------------------------------------------------
            Step 2: Call GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN once per
@@ -524,74 +501,93 @@
            -------------------------------------------------------- #}
         {% set db_upper = target.database | upper %}
         {% set is_ephemeral = '_PR_' in db_upper or db_upper.endswith('_PD') %}
+        {% set github_event = env_var('GITHUB_EVENT_NAME', '') | lower %}
+        {% set is_push_merge = github_event in ['push', 'merge_group'] %}
 
-        {% if certified_by_db | length > 0 %}
-            {% if is_ephemeral %}
-                {# ── DRY RUN: log what production would do, no CALL issued ── #}
+        {% if certified_read_by_db | length > 0 %}
+            {% if not is_push_merge %}
+                {# ── DRY RUN (PR / non-merge event): log what production would do, no CALL issued ── #}
                 {{ log(
-                    "[cert_grants] DRY RUN | env: " ~ target.database
+                    "[certified_read_grants] DRY RUN | event: " ~ (github_event if github_event else 'unknown/local')
+                    ~ " | env: " ~ target.database
                     ~ " | role: " ~ target.role
                     ~ " | The following domain(s) would have GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN"
-                    ~ " called if this were a production run:",
+                    ~ " called if this were a push/merge run:",
                     info=true
                 ) }}
-                {% for domain_db, objects in certified_by_db.items() %}
+                {% for domain_db, objects in certified_read_by_db.items() %}
                     {{ log(
-                        "[cert_grants]   domain: " ~ domain_db
-                        ~ "  certified objects: " ~ objects | length,
+                        "[certified_read_grants]   domain: " ~ domain_db
+                        ~ "  certified read: " ~ objects | length,
                         info=true
                     ) }}
                 {% endfor %}
                 {{ log(
-                    "[cert_grants] No grants issued — ephemeral environments do not hold CERTIFIED_READ grants."
-                    ~ " The hourly TAG_BASED_RBAC_CERT_PROC task is the safety net for this environment.",
+                    "[certified_read_grants] No grants issued — pull request runs do not hold CERTIFIED_READ grants."
+                    ~ " The hourly TAG_BASED_RBAC_CERTIFIED_READ_PROC task is the safety net for this environment.",
                     info=true
                 ) }}
             {% else %}
-                {# ── PRODUCTION: call the proc once per domain ── #}
-                {% for domain_db, objects in certified_by_db.items() %}
-                    {% set json_payload = tojson(objects) %}
+                {# ── PUSH/MERGE (production): call the proc once per domain ── #}
+                {# Role switch: the grant proc must run as {domain}_DEPLOY_CON,
+                not {domain}_DEPLOY_CUR. Switch once for the whole loop and
+                always restore the session role afterwards. #}
+                {% set original_role = target.role | upper %}
+                {% set grant_role = cp_dbt_standard_package.get_tagging_role() %}
+                {% if grant_role %}
                     {{ log(
-                        "[cert_grants] CALLING | domain: " ~ domain_db
-                        ~ " | certified objects: " ~ objects | length
-                        ~ " | role: " ~ target.role,
+                        "[certified_read_grants] Switching role " ~ original_role
+                        ~ " -> " ~ grant_role ~ " for grant proc calls",
                         info=true
                     ) }}
-                    {# Snowflake single-quoted string literal escape is a doubled
-                       apostrophe (''), not a backslash. The prior '\'' escape
-                       leaves a raw ' inside the literal and breaks the payload
-                       whenever an object name contains an apostrophe. #}
+                    {% do run_query('USE ROLE ' ~ grant_role) %}
+                {% endif %}
+
+                {% for domain_db, objects in certified_read_by_db.items() %}
+                    {% set json_payload = tojson(objects) %}
+                    {{ log(
+                        "[certified_read_grants] CALLING | event: " ~ github_event
+                        ~ " | domain: " ~ domain_db
+                        ~ " | certified read objects: " ~ objects | length
+                        ~ " | role: " ~ (grant_role if grant_role else original_role),
+                        info=true
+                    ) }}
                     {% set call_sql %}
                         CALL OPS_CUR.UTIL_COMMON.GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN(
                             '{{ domain_db }}',
-                            '{{ json_payload | replace("'", "''") }}'
-                        )
+                            '{{ json_payload | replace("'", "\'") }}')
                     {% endset %}
                     {% do run_query(call_sql) %}
                 {% endfor %}
+
+                {# Restore original session role #}
+                {% if grant_role %}
+                    {% do run_query('USE ROLE ' ~ original_role) %}
+                {% endif %}
             {% endif %}
         {% else %}
-            {% if is_ephemeral %}
+            {% if not is_push_merge %}
                 {{ log(
-                    "[cert_grants] SKIPPED | env: " ~ target.database
-                    ~ " | No certified models found targeting production databases."
+                    "[certified_read_grants] SKIPPED | event: " ~ (github_event if github_event else 'unknown/local')
+                    ~ " | env: " ~ target.database
+                    ~ " | No certified read models found targeting production databases."
                     ~ " In PR/PD runs, all node.database values resolve to ephemeral databases"
                     ~ " (_PR_*/_PD) and are excluded from grant processing by design.",
                     info=true
                 ) }}
             {% else %}
                 {{ log(
-                    "[cert_grants] SKIPPED | No models with IS_CERTIFIED=TRUE found in the dbt graph."
-                    ~ " Verify that certified models have snowflake_tags: {IS_CERTIFIED: 'TRUE'} in their config.",
+                    "[certified_read_grants] SKIPPED | No models with CERTIFIED_READ=TRUE found in the dbt graph."
+                    ~ " Verify that cross domain models have snowflake_tags: {CERTIFIED_READ: 'TRUE'} in their config.",
                     info=true
                 ) }}
             {% endif %}
-        {% endif %} {# certified_by_db length check #}
+        {% endif %} {# certified_read_by_db length check #}
 
         {% else %}
             {{ log(
-                "[cert_grants] SKIPPED | role: '" ~ target.role
-                ~ "' is not a DEPLOY or ELT role — certified grant reconciliation only runs"
+                "[certified_read_grants] SKIPPED | role: '" ~ target.role
+                ~ "' is not a DEPLOY or ELT role — cross domain grant reconciliation only runs"
                 ~ " for deployment and Airflow pipeline roles to prevent analyst runs from"
                 ~ " triggering privilege changes.",
                 info=true
@@ -654,65 +650,42 @@
            not rebuilt in this run but whose grants must remain active.
            -------------------------------------------------------- #}
         {% set cross_domain_by_db = {} %}
-        {% set skipped_ephemeral = [] %}
-
         {% for node_id, node in graph.nodes.items() %}
             {% if node.resource_type == 'model' %}
-
                 {# Resolve CROSS_DOMAIN from either tag location:
-                   - config.snowflake_tags (set via dbt model config)
-                   - config.meta.snowflake_tags (set via meta block) #}
+                - config.snowflake_tags (set via dbt model config)
+                - config.meta.snowflake_tags (set via meta block) #}
                 {% set model_tags  = node.config.get('snowflake_tags', {}) %}
                 {% set meta_tags   = node.config.get('meta', {}).get('snowflake_tags', {}) %}
-
                 {% set cross_domain = false %}
                 {% if model_tags.get('CROSS_DOMAIN', '') | upper == 'TRUE' %}
                     {% set cross_domain = true %}
                 {% elif meta_tags.get('CROSS_DOMAIN', '') | upper == 'TRUE' %}
                     {% set cross_domain = true %}
                 {% endif %}
-
                 {% if cross_domain %}
-                    {% set db  = node.database | upper %}
-                    {% set mat = node.config.materialized %}
-
-                    {# Map dbt materialization -> Snowflake object type.
-                       incremental / table -> TABLE; view -> VIEW.
-                       ephemeral models produce no physical object -- record
-                       the name for a single roll-up log line below and skip. #}
-                    {% if mat == 'ephemeral' %}
-                        {% do skipped_ephemeral.append(node.name) %}
-                    {% else %}
-                        {% set obj_type = 'VIEW' if mat == 'view' else 'TABLE' %}
-
-                        {# Collect certified objects from production databases only.
-                           PR/PD databases are ephemeral and never hold prod grants. #}
-                        {% if '_PR_' not in db and not db.endswith('_PD') %}
-
-                            {% if db not in cross_domain_by_db %}
-                                {% do cross_domain_by_db.update({db: []}) %}
-                            {% endif %}
-
-                            {% do cross_domain_by_db[db].append({
-                                'schema': node.schema | upper,
-                                'name':   (node.config.get('alias') or node.name) | upper,
-                                'type':   obj_type
-                            }) %}
-
-                        {% endif %}
+                    {% set db = node.database | upper %}
+                    {# Normalize ephemeral env suffixes back to the production database name:
+                    EX_CON_PD      -> EX_CON
+                    EX_CON_PR_123  -> EX_CON #}
+                    {% if '_PR_' in db %}
+                        {% set db = db.split('_PR_')[0] %}
+                    {% elif db.endswith('_PD') %}
+                        {% set db = db[:-3] %}
                     {% endif %}
+                    {% set mat = node.config.materialized %}
+                    {% set obj_type = 'VIEW' if mat == 'view' else 'TABLE' %}
+                    {% if db not in cross_domain_by_db %}
+                        {% do cross_domain_by_db.update({db: []}) %}
+                    {% endif %}
+                    {% do cross_domain_by_db[db].append({
+                        'schema': node.schema | upper,
+                        'name':   (node.config.get('alias') or node.name) | upper,
+                        'type':   obj_type
+                    }) %}
                 {% endif %}
             {% endif %}
         {% endfor %}
-
-        {% if skipped_ephemeral | length > 0 %}
-            {{ log(
-                "[cross_domain_grants] SKIPPED " ~ skipped_ephemeral | length
-                ~ " ephemeral CROSS_DOMAIN model(s): " ~ skipped_ephemeral | join(', ')
-                ~ " — ephemeral models produce no physical relation and cannot receive grants.",
-                info=true
-            ) }}
-        {% endif %}
 
         {# --------------------------------------------------------
            Step 2: Call GRANT_CROSS_DOMAIN_READ_ACCESS_BY_DOMAIN once per
@@ -726,15 +699,18 @@
            -------------------------------------------------------- #}
         {% set db_upper = target.database | upper %}
         {% set is_ephemeral = '_PR_' in db_upper or db_upper.endswith('_PD') %}
+        {% set github_event = env_var('GITHUB_EVENT_NAME', '') | lower %}
+        {% set is_push_merge = github_event in ['push', 'merge_group'] %}
 
         {% if cross_domain_by_db | length > 0 %}
-            {% if is_ephemeral %}
-                {# ── DRY RUN: log what production would do, no CALL issued ── #}
+            {% if not is_push_merge %}
+                {# ── DRY RUN (PR / non-merge event): log what production would do, no CALL issued ── #}
                 {{ log(
-                    "[cross_domain_grants] DRY RUN | env: " ~ target.database
+                    "[cross_domain_grants] DRY RUN | event: " ~ (github_event if github_event else 'unknown/local')
+                    ~ " | env: " ~ target.database
                     ~ " | role: " ~ target.role
                     ~ " | The following domain(s) would have GRANT_CROSS_DOMAIN_READ_ACCESS_BY_DOMAIN"
-                    ~ " called if this were a production run:",
+                    ~ " called if this were a push/merge run:",
                     info=true
                 ) }}
                 {% for domain_db, objects in cross_domain_by_db.items() %}
@@ -745,37 +721,53 @@
                     ) }}
                 {% endfor %}
                 {{ log(
-                    "[cross_domain_grants] No grants issued — ephemeral environments do not hold CROSS_DOMAIN_READ grants."
+                    "[cross_domain_grants] No grants issued — pull request runs do not hold CROSS_DOMAIN_READ grants."
                     ~ " The hourly TAG_BASED_RBAC_CROSS_DOMAIN_PROC task is the safety net for this environment.",
                     info=true
                 ) }}
             {% else %}
-                {# ── PRODUCTION: call the proc once per domain ── #}
+                {# ── PUSH/MERGE (production): call the proc once per domain ── #}
+                {# Role switch: the grant proc must run as {domain}_DEPLOY_CON,
+                not {domain}_DEPLOY_CUR. Switch once for the whole loop and
+                always restore the session role afterwards. #}
+                {% set original_role = target.role | upper %}
+                {% set grant_role = cp_dbt_standard_package.get_tagging_role() %}
+                {% if grant_role %}
+                    {{ log(
+                        "[cross_domain_grants] Switching role " ~ original_role
+                        ~ " -> " ~ grant_role ~ " for grant proc calls",
+                        info=true
+                    ) }}
+                    {% do run_query('USE ROLE ' ~ grant_role) %}
+                {% endif %}
+
                 {% for domain_db, objects in cross_domain_by_db.items() %}
                     {% set json_payload = tojson(objects) %}
                     {{ log(
-                        "[cross_domain_grants] CALLING | domain: " ~ domain_db
+                        "[cross_domain_grants] CALLING | event: " ~ github_event
+                        ~ " | domain: " ~ domain_db
                         ~ " | cross domain objects: " ~ objects | length
-                        ~ " | role: " ~ target.role,
+                        ~ " | role: " ~ (grant_role if grant_role else original_role),
                         info=true
                     ) }}
-                    {# Snowflake single-quoted string literal escape is a doubled
-                       apostrophe (''), not a backslash. The prior '\'' escape
-                       leaves a raw ' inside the literal and breaks the payload
-                       whenever an object name contains an apostrophe. #}
                     {% set call_sql %}
                         CALL OPS_CUR.UTIL_COMMON.GRANT_CROSS_DOMAIN_READ_ACCESS_BY_DOMAIN(
                             '{{ domain_db }}',
-                            '{{ json_payload | replace("'", "''") }}'
-                        )
+                            '{{ json_payload | replace("'", "\'") }}')
                     {% endset %}
                     {% do run_query(call_sql) %}
                 {% endfor %}
+
+                {# Restore original session role #}
+                {% if grant_role %}
+                    {% do run_query('USE ROLE ' ~ original_role) %}
+                {% endif %}
             {% endif %}
         {% else %}
-            {% if is_ephemeral %}
+            {% if not is_push_merge %}
                 {{ log(
-                    "[cross_domain_grants] SKIPPED | env: " ~ target.database
+                    "[cross_domain_grants] SKIPPED | event: " ~ (github_event if github_event else 'unknown/local')
+                    ~ " | env: " ~ target.database
                     ~ " | No cross domain models found targeting production databases."
                     ~ " In PR/PD runs, all node.database values resolve to ephemeral databases"
                     ~ " (_PR_*/_PD) and are excluded from grant processing by design.",
