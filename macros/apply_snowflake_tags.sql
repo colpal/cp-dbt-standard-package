@@ -55,6 +55,10 @@
         SHOW TAGS IN SCHEMA {{ config.tag_database }}.{{ config.tag_schema }}
     {% endset %}
 
+    {% if not execute %}
+        {{ return([]) }}
+    {% endif %}
+
     {% set rows = run_query(sql) %}
     {% set tag_list = [] %}
 
@@ -115,7 +119,7 @@
 
     {% if not ns.tag_exists %}
         {{ log("ERROR: Tag '" ~ tag_name ~ "' doesn't exist in Snowflake. Skipping.", info=true) }}
-        {{ return() }}
+        {{ return(none) }}
     {% endif %}
 
     {% set tag_name = ns.matching_tag %}
@@ -134,7 +138,7 @@
         {% if not val_ns.is_valid %}
             {{ log("ERROR: Value '" ~ tag_value ~ "' not allowed for tag '" ~ tag_name ~ "'.", info=true) }}
             {{ log("Allowed values: " ~ ns.allowed_values | join(', '), info=true) }}
-            {{ return() }}
+            {{ return(none) }}
         {% endif %}
 
         {% set tag_value = val_ns.matched_value %}
@@ -179,7 +183,7 @@
 
     {% if not ns.tag_exists %}
         {{ log("ERROR: Column tag '" ~ tag_name ~ "' doesn't exist in Snowflake. Skipping.", info=true) }}
-        {{ return() }}
+        {{ return(none) }}
     {% endif %}
 
     {% set tag_name = ns.matching_tag %}
@@ -197,7 +201,7 @@
         {% if not val_ns.is_valid %}
             {{ log("ERROR: Value '" ~ tag_value ~ "' not allowed for column tag '" ~ tag_name ~ "'.", info=true) }}
             {{ log("Allowed values: " ~ ns.allowed_values | join(', '), info=true) }}
-            {{ return() }}
+            {{ return(none) }}
         {% endif %}
 
         {% set tag_value = val_ns.matched_value %}

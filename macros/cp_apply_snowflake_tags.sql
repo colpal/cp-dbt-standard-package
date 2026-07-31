@@ -118,7 +118,7 @@
         {% if not val_ns.is_valid %}
             {{ log("ERROR: Value '" ~ tag_value ~ "' not in allowed values for tag '" ~ tag_name ~ "'. Tag will NOT be applied.", info=true) }}
             {{ log("Allowed values: " ~ ns.allowed_values | join(', '), info=true) }}
-            {{ return() }}
+            {{ return(none) }}
         {% endif %}
         
         {# use the matched value #}
@@ -164,7 +164,7 @@
     {# mismatch error #}
     {% if not ns.tag_exists %}
         {{ log("ERROR: Tag '" ~ tag_name ~ "' doesn't exist in Snowflake. Column tag will NOT be applied.", info=true) }}
-        {{ return() }}
+        {{ return(none) }}
     {% endif %}
     
     {# use the matched tag name for all further operations #}
@@ -184,7 +184,7 @@
         {% if not val_ns.is_valid %}
             {{ log("ERROR: Value '" ~ tag_value ~ "' not in allowed values for tag '" ~ tag_name ~ "'. Column tag will NOT be applied.", info=true) }}
             {{ log("Allowed values: " ~ ns.allowed_values | join(', '), info=true) }}
-            {{ return() }}
+            {{ return(none) }}
         {% endif %}
         
         {# use the matched value #}
