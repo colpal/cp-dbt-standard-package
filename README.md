@@ -39,3 +39,31 @@ packages:
 
 We need to set the `DBT_ARTIFACTS_DATABASE` and  `DBT_ARTIFACTS_SCHEMA` environment variable to the name of a database where you have write permissions. When this variable is set, dbt will use the database and schema to store all artifacts.
 Dbt artifacts are the output of dbt runs, such as compiled SQL queries, dbt run, dbt snapshots, dbt seed etc.
+
+## Snowflake column tags — PII_LEVEL → SECURITY_LEVEL (DPB-2846)
+
+Column-scoped only. When a column declares `PII_LEVEL` under `meta.snowflake_tags`, `tag_models_on_run_end` derives and co-applies `SECURITY_LEVEL`:
+
+| PII_LEVEL | Inferred SECURITY_LEVEL |
+|---|---|
+| `L1`, `L2` | `RESTRICTED` |
+| `L3A`, `L3B` | `HIGHLY_RESTRICTED` |
+
+```yaml
+columns:
+  - name: email_address
+    meta:
+      snowflake_tags:
+        PII_LEVEL: L2
+        # SECURITY_LEVEL: RESTRICTED is inferred and applied automatically
+```
+
+Rules:
+
+- Explicit `SECURITY_LEVEL` that matches the inference is accepted (idempotent).
+- Explicit `SECURITY_LEVEL` that conflicts with the inference raises a compiler error and fails the dbt run.
+- Unsupported `PII_LEVEL` values raise a compiler error.
+- Non-PII restricted columns may set `SECURITY_LEVEL` directly without `PII_LEVEL`.
+- Do not set an `IS_PII` boolean tag.
+
+Snowflake tag objects (`OPS_CUR.TAGS.SECURITY_LEVEL`, `OPS_CUR.TAGS.PII_LEVEL`) are provisioned in `data-platforms-infrastructure` (DPB-2844 Variant 2).

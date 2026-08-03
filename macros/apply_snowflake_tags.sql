@@ -21,6 +21,12 @@
              meta:
                snowflake_tags:
                  TAG_NAME: 'tag_value_a'
+                 # DPB-2846 — PII classification (column-scoped only):
+                 #   PII_LEVEL: L1 | L2  -> SECURITY_LEVEL RESTRICTED (inferred)
+                 #   PII_LEVEL: L3A | L3B -> SECURITY_LEVEL HIGHLY_RESTRICTED
+                 # Explicit SECURITY_LEVEL must match the inferred value or the
+                 # dbt run fails. Non-PII restricted columns may set
+                 # SECURITY_LEVEL directly without PII_LEVEL.
 
   -----------------------------------------------
 #}
@@ -269,10 +275,17 @@
                     {% endfor %}
                 {% endif %}
 
-                {# Column-level tags #}
+                {# Column-level tags.
+                   DPB-2846: resolve PII_LEVEL -> SECURITY_LEVEL (and hard-fail
+                   on conflict) before applying any column tags. #}
                 {% for col_name, col in node.columns.items() %}
                     {% if col.meta is defined and col.meta.snowflake_tags is defined %}
-                        {% for tag_name, tag_value in col.meta.snowflake_tags.items() %}
+                        {% set resolved_tags = cp_dbt_standard_package.resolve_column_snowflake_tags(
+                            col.meta.snowflake_tags,
+                            column_name=col_name,
+                            model_name=model_name
+                        ) %}
+                        {% for tag_name, tag_value in resolved_tags.items() %}
                             {{ cp_dbt_standard_package.apply_column_tag(model_database, model_schema, model_name, col_name, tag_name, tag_value, rel_type) }}
                         {% endfor %}
                     {% endif %}
