@@ -186,8 +186,8 @@
         {% endif %}
     {% endif %}
 
-    {# Iceberg tables require ALTER ICEBERG TABLE syntax #}
-    {% set ddl_prefix = 'ICEBERG ' if is_iceberg else '' %}
+    {# Iceberg tables require ALTER ICEBERG TABLE; views must not use ICEBERG prefix #}
+    {% set ddl_prefix = 'ICEBERG ' if is_iceberg and relation_type == 'TABLE' else '' %}
     {# --------------------------------------------------------
        Role switch: tag DDL must run as {domain}_DEPLOY_CON,
        not {domain}_DEPLOY_CUR. Switch only if needed, and
@@ -275,8 +275,8 @@
         {% endif %}
     {% endif %}
 
-    {# Iceberg tables require ALTER ICEBERG TABLE syntax #}
-    {% set ddl_prefix = 'ICEBERG ' if is_iceberg else '' %}
+    {# Iceberg tables require ALTER ICEBERG TABLE; views must not use ICEBERG prefix #}
+    {% set ddl_prefix = 'ICEBERG ' if is_iceberg and relation_type == 'TABLE' else '' %}
     {# --------------------------------------------------------
        Role switch: tag DDL must run as {domain}_DEPLOY_CON,
        not {domain}_DEPLOY_CUR. Switch only if needed, and
@@ -340,9 +340,14 @@
 
                 {# Detect Iceberg from dbt config — avoids querying Snowflake
                    metadata (adapter.get_relation) for every tag application.
-                   A model is Iceberg if table_format='iceberg' or catalog_name is set. #}
+                   A model is Iceberg if table_format='iceberg' or catalog_name is set.
+                   Views use ALTER VIEW DDL (never ALTER ICEBERG VIEW). #}
+                {% set catalog_nm = node.config.get('catalog_name') %}
                 {% set model_is_iceberg = (node.config.get('table_format', '') == 'iceberg')
-                    or (node.config.get('catalog_name', '') | length > 0) %}
+                    or (catalog_nm is not none and catalog_nm | string | length > 0) %}
+                {% if rel_type == 'VIEW' %}
+                    {% set model_is_iceberg = false %}
+                {% endif %}
 
                 {{ log("Processing model: " ~ model_database ~ "." ~ model_schema ~ "." ~ model_name ~ (" [iceberg]" if model_is_iceberg else ""), info=true) }}
 
