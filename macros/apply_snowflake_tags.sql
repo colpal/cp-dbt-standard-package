@@ -95,9 +95,10 @@
 
 {# ============================================================
    APPLY TAG TO MODEL
-   Supports: .strip() whitespace handling, optional relation_type (skip DB query)
+   Supports: .strip() whitespace handling, optional relation_type (skip DB query),
+   optional is_iceberg (skip adapter.get_relation query when caller already knows)
    ============================================================ #}
-{% macro apply_tag(database_nm, schema, identifier, tag_name, tag_value, relation_type=none) %}
+{% macro apply_tag(database_nm, schema, identifier, tag_name, tag_value, relation_type=none, is_iceberg=none) %}
 
     {% set available_tags = cp_dbt_standard_package.get_snowflake_tags(show_log=false) %}
     {% set config = cp_dbt_standard_package.get_tag_config() %}
@@ -140,15 +141,23 @@
         {% set tag_value = val_ns.matched_value %}
     {% endif %}
 
-    {# Identify relation type (use passed value if available, otherwise query) #}
-    {% if not relation_type %}
+    {# Identify relation type and Iceberg format. #}
+    {% if is_iceberg is none or not relation_type %}
         {% set relation = adapter.get_relation(database_nm, schema, identifier) %}
-        {% set relation_type = relation.type | upper if relation else 'TABLE' %}
+        {% if not relation_type %}
+            {% set relation_type = relation.type | upper if relation else 'TABLE' %}
+        {% endif %}
+        {% if is_iceberg is none %}
+            {% set is_iceberg = (relation.is_iceberg_format if relation else false) %}
+        {% endif %}
     {% endif %}
+
+    {# Iceberg tables require ALTER ICEBERG TABLE; views must not use ICEBERG prefix #}
+    {% set ddl_prefix = 'ICEBERG ' if is_iceberg and relation_type == 'TABLE' else '' %}
 
     {# Apply tag #}
     {% set sql %}
-      ALTER {{ relation_type }} {{ database_nm }}.{{ schema }}.{{ identifier }}
+      ALTER {{ ddl_prefix }}{{ relation_type }} {{ database_nm }}.{{ schema }}.{{ identifier }}
       SET TAG {{ config.tag_database }}.{{ config.tag_schema }}.{{ tag_name }} = '{{ tag_value }}'
     {% endset %}
 
@@ -160,9 +169,10 @@
 
 {# ============================================================
    APPLY COLUMN TAG
-   Supports: .strip() whitespace handling, optional relation_type (skip DB query)
+   Supports: .strip() whitespace handling, optional relation_type (skip DB query),
+   optional is_iceberg (skip adapter.get_relation query when caller already knows)
    ============================================================ #}
-{% macro apply_column_tag(database_nm, schema, identifier, column_name, tag_name, tag_value, relation_type=none) %}
+{% macro apply_column_tag(database_nm, schema, identifier, column_name, tag_name, tag_value, relation_type=none, is_iceberg=none) %}
 
     {% set available_tags = cp_dbt_standard_package.get_snowflake_tags(show_log=false) %}
     {% set config = cp_dbt_standard_package.get_tag_config() %}
@@ -203,14 +213,22 @@
         {% set tag_value = val_ns.matched_value %}
     {% endif %}
 
-    {# Use passed relation_type if available, otherwise query #}
-    {% if not relation_type %}
+    {# Identify relation type and Iceberg format — same as apply_tag. #}
+    {% if is_iceberg is none or not relation_type %}
         {% set relation = adapter.get_relation(database_nm, schema, identifier) %}
-        {% set relation_type = relation.type | upper if relation else 'TABLE' %}
+        {% if not relation_type %}
+            {% set relation_type = relation.type | upper if relation else 'TABLE' %}
+        {% endif %}
+        {% if is_iceberg is none %}
+            {% set is_iceberg = (relation.is_iceberg_format if relation else false) %}
+        {% endif %}
     {% endif %}
 
+    {# Iceberg tables require ALTER ICEBERG TABLE; views must not use ICEBERG prefix #}
+    {% set ddl_prefix = 'ICEBERG ' if is_iceberg and relation_type == 'TABLE' else '' %}
+
     {% set sql %}
-      ALTER {{ relation_type }} {{ database_nm }}.{{ schema }}.{{ identifier }}
+      ALTER {{ ddl_prefix }}{{ relation_type }} {{ database_nm }}.{{ schema }}.{{ identifier }}
       MODIFY COLUMN {{ column_name }}
       SET TAG {{ config.tag_database }}.{{ config.tag_schema }}.{{ tag_name }} = '{{ tag_value }}'
     {% endset %}
@@ -253,7 +271,15 @@
                 {% set mat = node.config.materialized %}
                 {% set rel_type = 'VIEW' if mat == 'view' else 'TABLE' %}
 
-                {{ log("Processing model: " ~ model_database ~ "." ~ model_schema ~ "." ~ model_name, info=true) }}
+                {# Iceberg from dbt config (inherited catalog_name / table_format). Views use ALTER VIEW DDL. #}
+                {% set catalog_nm = node.config.get('catalog_name') %}
+                {% set model_is_iceberg = (node.config.get('table_format', '') == 'iceberg')
+                    or (catalog_nm is not none and catalog_nm | string | length > 0) %}
+                {% if rel_type == 'VIEW' %}
+                    {% set model_is_iceberg = false %}
+                {% endif %}
+
+                {{ log("Processing model: " ~ model_database ~ "." ~ model_schema ~ "." ~ model_name ~ (" [iceberg]" if model_is_iceberg else ""), info=true) }}
 
                 {# Table-level tags — check both config.snowflake_tags and config.meta.snowflake_tags #}
                 {% set model_tags = node.config.get('snowflake_tags', {}) %}
@@ -261,11 +287,11 @@
 
                 {% if meta_tags %}
                     {% for tag_name, tag_value in meta_tags.items() %}
-                        {{ cp_dbt_standard_package.apply_tag(model_database, model_schema, model_name, tag_name, tag_value, rel_type) }}
+                        {{ cp_dbt_standard_package.apply_tag(model_database, model_schema, model_name, tag_name, tag_value, rel_type, model_is_iceberg) }}
                     {% endfor %}
                 {% elif model_tags %}
                     {% for tag_name, tag_value in model_tags.items() %}
-                        {{ cp_dbt_standard_package.apply_tag(model_database, model_schema, model_name, tag_name, tag_value, rel_type) }}
+                        {{ cp_dbt_standard_package.apply_tag(model_database, model_schema, model_name, tag_name, tag_value, rel_type, model_is_iceberg) }}
                     {% endfor %}
                 {% endif %}
 
@@ -273,7 +299,7 @@
                 {% for col_name, col in node.columns.items() %}
                     {% if col.meta is defined and col.meta.snowflake_tags is defined %}
                         {% for tag_name, tag_value in col.meta.snowflake_tags.items() %}
-                            {{ cp_dbt_standard_package.apply_column_tag(model_database, model_schema, model_name, col_name, tag_name, tag_value, rel_type) }}
+                            {{ cp_dbt_standard_package.apply_column_tag(model_database, model_schema, model_name, col_name, tag_name, tag_value, rel_type, model_is_iceberg) }}
                         {% endfor %}
                     {% endif %}
                 {% endfor %}
