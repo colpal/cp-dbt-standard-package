@@ -114,6 +114,32 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
 
 
 {# ============================================================================
+   SECTION 2B: RELATION TYPE RECONCILIATION (Iceberg-only)
+   PR preview databases persist across CI runs. When a model's materialization
+   changes (e.g. view → iceberg table), CREATE OR REPLACE ICEBERG TABLE cannot
+   replace an existing VIEW. Drop the mismatched relation before CREATE.
+   ============================================================================ #}
+
+{% macro cp_reconcile_relation_type(relation, target_type) %}
+    {% if execute %}
+        {% set existing = adapter.get_relation(
+            database=relation.database,
+            schema=relation.schema,
+            identifier=relation.identifier
+        ) %}
+        {% if existing and existing.type != target_type %}
+            {{ log(
+                "Dropping " ~ existing.type ~ " " ~ existing
+                ~ " before creating " ~ target_type ~ " (materialization change)",
+                info=true
+            ) }}
+            {% do adapter.drop_relation(existing) %}
+        {% endif %}
+    {% endif %}
+{% endmacro %}
+
+
+{# ============================================================================
    SECTION 3: MATERIALIZATION OVERRIDES (Safe Temp Table Routing)
    ============================================================================ #}
 
@@ -127,6 +153,7 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
         introspection-based casting logic. Wrapping it would round-trip
         types through TO_JSON/VARCHAR and materially widen the staging table. -#}
     {% if language == 'sql' and is_iceberg and not temporary %}
+        {% do cp_dbt_standard_package.cp_reconcile_relation_type(relation, 'table') %}
         {% set safe_sql = cp_dbt_standard_package.iceberg_type_safe_wrap(compiled_code) %}
         {{ return(dbt.snowflake__create_table_as(temporary, relation, safe_sql, language)) }}
     {% else %}
