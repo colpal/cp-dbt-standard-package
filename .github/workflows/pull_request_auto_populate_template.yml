@@ -5,30 +5,31 @@ on:
     types: [opened, reopened, synchronize]
 
 concurrency:
-    group: pr-description-${{ github.event.pull_request.number }}
-    cancel-in-progress: true
+  group: pr-description-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
 
 jobs:
   update-pr-description:
     runs-on: cp-ubuntu22.04-amd64-1core-1gb
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v3
-        
       - name: Install GitHub CLI
         run: |
           # 1. Define version and detect architecture
           GH_VER="2.82.1"
           ARCH="$(dpkg --print-architecture)"
           DEB_NAME="gh_${GH_VER}_linux_${ARCH}.deb"
-          
+
           # 2. Download using curl (since wget is missing)
           # -L follows redirects, -O saves the file with its original name
           curl -LO "https://github.com/cli/cli/releases/download/v${GH_VER}/${DEB_NAME}"
-          
+
           # 3. Install
           sudo dpkg -i "${DEB_NAME}"
-          
+
           # 4. Cleanup
           rm "${DEB_NAME}"
 
@@ -52,40 +53,40 @@ jobs:
             -H "Accept: application/json" "$JIRA_API_URL")
 
           # --- UPDATED JQ COMMANDS FOR CORRECT FORMATTING ---
-          
+
           SUMMARY=$(echo "$RESPONSE" | jq -r '.fields.summary')
 
           # This new query finds each paragraph, joins all text within it,
           # and then joins all paragraphs with a newline.
           DESCRIPTION=$(echo "$RESPONSE" | jq -r '
-            .fields.description.content | 
+            .fields.description.content |
             map(
-              .content | 
-              map(.text // "") | 
+              .content |
+              map(.text // "") |
               join("")
-            ) | 
+            ) |
             join("\n")
           ' 2>/dev/null || echo "No description")
 
-          # This query finds all content and converts "hardBreak" objects 
+          # This query finds all content and converts "hardBreak" objects
           # into literal newline characters (\n) to preserve the list format.
           ACCEPTANCE_CRITERIA=$(echo "$RESPONSE" | jq -r '
-            .fields.customfield_10046.content | 
+            .fields.customfield_10046.content |
             map(
-              .content | 
+              .content |
               map(
-                if .type == "text" then .text 
-                elif .type == "hardBreak" then "\n" 
-                else "" 
+                if .type == "text" then .text
+                elif .type == "hardBreak" then "\n"
+                else ""
                 end
-              ) | 
+              ) |
               join("")
-            ) | 
+            ) |
             join("\n")
           ' 2>/dev/null || echo "No acceptance criteria")
-          
+
           # --- Use heredoc syntax to save multiline strings (this part is correct) ---
-          
+
           echo "SUMMARY<<EOF" >> $GITHUB_ENV
           echo "$SUMMARY" >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
@@ -100,57 +101,43 @@ jobs:
 
       - name: Update Pull Request Description
         run: |
-          gh auth setup-git
-
           PR_NUMBER=${{ github.event.pull_request.number }}
 
           AUTO_START="<!-- JIRA-AUTO-START -->"
           AUTO_END="<!-- JIRA-AUTO-END -->"
-          DEV_START="<!-- DEV-NOTES-START -->"
-          DEV_END="<!-- DEV-NOTES-END -->"
 
           JIRA_URL="${{ secrets.JIRA_BASE_URL }}"
 
           # 1. Get current PR body
           CURRENT_BODY=$(gh pr view "$PR_NUMBER" --json body --jq '.body // ""')
 
-          # 2. Extract the developer's notes.
-          # Preference order:
-          #   a) If DEV-NOTES markers exist (added on a previous run), take exactly what's inside them.
-          #   b) Else strip the JIRA-AUTO block from the body — whatever remains is the developer's raw PR description.
-          if printf '%s' "$CURRENT_BODY" | grep -Fq "$DEV_START" && printf '%s' "$CURRENT_BODY" | grep -Fq "$DEV_END"; then
-            DEV_CONTENT=$(printf '%s\n' "$CURRENT_BODY" | sed -n "/$DEV_START/,/$DEV_END/p" | sed '1d;$d')
-          elif printf '%s' "$CURRENT_BODY" | grep -Fq "$AUTO_START" && printf '%s' "$CURRENT_BODY" | grep -Fq "$AUTO_END"; then
-            DEV_CONTENT=$(printf '%s' "$CURRENT_BODY" | sed -e "/$AUTO_START/,/$AUTO_END/d")
+          # 2. Remove old auto-generated section (idempotent behavior)
+          if printf '%s' "$CURRENT_BODY" | grep -Fq "$AUTO_START" && printf '%s' "$CURRENT_BODY" | grep -Fq "$AUTO_END"; then
+            CLEAN_BODY=$(printf '%s' "$CURRENT_BODY" | sed -e "/$AUTO_START/,/$AUTO_END/d")
           else
-            DEV_CONTENT="$CURRENT_BODY"
+            CLEAN_BODY="$CURRENT_BODY"
           fi
 
-          # Remove leftover Jira reference-style links from the developer's content
-          DEV_CONTENT=$(printf '%s\n' "$DEV_CONTENT" | sed '/^\[[A-Z][A-Z0-9_-]*-[0-9]\+\]: https:\/\/.*atlassian\.net\/browse\/.*$/d')
+          # Remove Jira reference-style links (cleanup leftover bottom links)
+          CLEAN_BODY=$(printf '%s\n' "$CLEAN_BODY" | sed '/^\[[A-Z][A-Z0-9_-]*-[0-9]\+\]: https:\/\/.*atlassian\.net\/browse\/.*$/d')
 
-          # Remove any auto-added "### Developer Notes" heading (it will be re-added at the top)
-          DEV_CONTENT=$(printf '%s\n' "$DEV_CONTENT" | awk '!seen && $0 == "### Developer Notes" { seen = 1; next } { print }')
+          # Strip previously injected "### Developer Notes" header and standalone "---" separator
+          # so they are not duplicated on subsequent runs (developer notes now live above the auto section)
+          CLEAN_BODY=$(printf '%s\n' "$CLEAN_BODY" | sed \
+            -e '/^### Developer Notes[[:space:]]*$/d' \
+            -e '/^---[[:space:]]*$/d')
 
-          # Trim leading/trailing blank lines and stray "---" separators (mawk-safe: uses NF and exact string match)
-          DEV_CONTENT=$(printf '%s' "$DEV_CONTENT" | awk '
-          { lines[NR] = $0; blank[NR] = (NF == 0) }
-          END {
-            hi = NR
-            while (hi > 0 && (blank[hi] || lines[hi] == "---")) hi--
-            lo = 1
-            while (lo <= hi && (blank[lo] || lines[lo] == "---")) lo++
-            for (i = lo; i <= hi; i++) print lines[i]
-          }')
-
-          # Check whether any meaningful developer notes remain (ignore stale template lines)
-          FILTERED_BODY=$(printf '%s\n' "$DEV_CONTENT" | sed '
+          # Detect if body contains meaningful developer content
+          # Ignore known Jira-generated patterns
+          FILTERED_BODY=$(printf '%s\n' "$CLEAN_BODY" | sed '
           /^Note$/d
           /^Overview$/d
           ')
+
+          # Check whether any real developer notes remain
           HAS_NOTES="$(printf '%s' "$FILTERED_BODY" | tr -d '[:space:]')"
 
-          # 3. Build the Jira auto-generated section (appended at the bottom)
+          # 3. Build new Jira section
           {
             echo "$AUTO_START"
             echo "### Jira Ticket Number and Link:"
@@ -162,36 +149,35 @@ jobs:
             echo "### Acceptance Criteria:"
             echo "$ACCEPTANCE_CRITERIA"
             echo ""
+
             echo "### Checklist (Reviewer Use)"
             echo "- [ ] Linked Jira ticket is correct and accessible"
             echo "- [ ] Summary accurately reflects changes"
             echo "- [ ] Testing steps are clear and reproducible"
             echo "- [ ] Code follows repository standards"
             echo "- [ ] All CI checks pass"
+            echo ""
+
             echo "$AUTO_END"
           } > generated_section.txt
 
-          # 4. Assemble final body: Developer Notes first (wrapped in markers), then Jira section.
-          #    - No notes  -> heading followed immediately by the Jira section (no blank line, no separator).
-          #    - Has notes -> heading, blank line, notes, blank line, "---" separator, then Jira section.
-          {
-            echo "$DEV_START"
-            echo "### Developer Notes"
-            if [ -n "$HAS_NOTES" ]; then
+          # 4. Merge with developer notes — notes go BEFORE the auto-generated Jira section
+          if [ -n "$HAS_NOTES" ]; then
+            {
+              echo "### Developer Notes"
               echo ""
-              printf '%s\n' "$DEV_CONTENT"
-              echo ""
-            fi
-            echo "$DEV_END"
-            if [ -n "$HAS_NOTES" ]; then
+              printf '%s\n' "$CLEAN_BODY"
               echo ""
               echo "---"
               echo ""
-            fi
-            cat generated_section.txt
-          } > final_body.txt
+              cat generated_section.txt
+            } > final_body.txt
+          else
+            cp generated_section.txt final_body.txt
+          fi
 
           # 5. Update PR safely
           gh pr edit "$PR_NUMBER" --body-file final_body.txt
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
