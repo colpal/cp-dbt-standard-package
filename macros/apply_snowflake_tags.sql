@@ -383,13 +383,43 @@
 
 {# ============================================================
    AUTO-TAG FROM RUN RESULTS (on-run-end)
-   Called automatically by on-run-end hook to reapply tags after dbt runs
+   Called automatically by on-run-end hook to reapply tags after dbt runs.
+
+   DPB-2513 guards, in order:
+     1. Command guard: skip when the current dbt invocation cannot have
+        created or replaced Snowflake objects (test / compile / parse /
+        deps / list / docs / debug / show / clean / init / source ...).
+        Belt-and-suspenders with the yaml-level guard in dbt_project.yml —
+        protects any downstream project that wires this macro into
+        on-run-end without the yaml guard, and covers `dbt source freshness`
+        (which runs on-run-end hooks by default as of dbt-core 1.10; the
+        `source_freshness_run_project_hooks` flag was removed in v2.0).
+     2. Metadata-package guard: skip when the only successful models were
+        from `dbt_project_evaluator`. dbt-common CI runs that package as its
+        own dedicated `dbt build --select package:dbt_project_evaluator+`
+        step; its models never carry `snowflake_tags`, so there is nothing
+        to reapply. Extend the ignore list if new metadata-only packages
+        (e.g. elementary) are added to CI.
    ============================================================ #}
 {% macro tag_models_from_results() %}
     {% if execute %}
+        {% set object_mutating_cmds = ['run', 'build', 'seed', 'snapshot', 'clone'] %}
+        {% if flags.WHICH not in object_mutating_cmds %}
+            {{ log(
+                "[tag_models_from_results] SKIPPED | command '" ~ flags.WHICH
+                ~ "' does not create or replace Snowflake objects — nothing to tag."
+                ~ " Hook only fires for: " ~ object_mutating_cmds | join(', '),
+                info=true
+            ) }}
+            {{ return('') }}
+        {% endif %}
+
+        {% set ignore_packages = ['dbt_project_evaluator'] %}
         {% set successful_models = [] %}
         {% for res in results %}
-            {% if res.node.resource_type == 'model' and res.status in ['success', 'pass'] %}
+            {% if res.node.resource_type == 'model'
+              and res.status in ['success', 'pass']
+              and res.node.package_name not in ignore_packages %}
                 {% do successful_models.append(res.node.unique_id) %}
             {% endif %}
         {% endfor %}
@@ -398,7 +428,11 @@
             {{ log("Auto-tagging " ~ successful_models | length ~ " deployed model(s)", info=true) }}
             {{ cp_dbt_standard_package.tag_models_on_run_end(successful_models) }}
         {% else %}
-            {{ log("No successfully deployed models to tag.", info=true) }}
+            {{ log(
+                "[tag_models_from_results] SKIPPED | no user-project models successfully built"
+                ~ " (ignoring packages: " ~ ignore_packages | join(', ') ~ ") — nothing to tag.",
+                info=true
+            ) }}
         {% endif %}
     {% endif %}
 {% endmacro %}
@@ -425,9 +459,68 @@
    The legacy 0-arg GRANT_CERTIFIED_READ_ACCESS() procedure continues
    to run on its hourly Snowflake Task, acting as a safety net for
    objects tagged directly in Snowflake (outside of dbt runs).
+
+   DPB-2513 guards (evaluated before role/graph iteration):
+     1. Command guard: skip when the current dbt invocation cannot have
+        created or replaced Snowflake objects (test / compile / parse /
+        deps / list / docs / debug / show / clean / init / source ...).
+        Primary blocker for the per-domain <DOMAIN>_TEST role rollout —
+        the read-only test role must not require USAGE on
+        OPS_CUR.UTIL_COMMON.GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN.
+        Also prevents `dbt source freshness` (hooks now run by default
+        in dbt-core 1.10+; flag removed in v2.0) from firing the CALL
+        on every freshness check. Belt-and-suspenders with the yaml-
+        level guard in dbt_project.yml.
+     2. Metadata-package guard: skip when the only successful grant-
+        holding nodes (models, seeds, snapshots) were from
+        `dbt_project_evaluator`. CI's `dbt build --select
+        package:dbt_project_evaluator+` step never touches nodes that
+        carry IS_CERTIFIED, so CERTIFIED_READ grants cannot have been
+        wiped — the CALL would be wasted. Extend the ignore list if new
+        metadata-only packages are added to CI.
+
+        Filter covers `model`, `seed`, and `snapshot` because each
+        materializes as a Snowflake table/view that can hold an
+        IS_CERTIFIED tag and therefore CERTIFIED_READ grants.
+        Restricting to `model` alone incorrectly skipped the CALL on
+        `dbt seed` / `dbt snapshot` runs (DPB-2513 8f04fbf).
    ============================================================ #}
 {% macro call_certified_read_proc() %}
     {% if execute %}
+
+        {% set object_mutating_cmds = ['run', 'build', 'seed', 'snapshot', 'clone'] %}
+        {% if flags.WHICH not in object_mutating_cmds %}
+            {{ log(
+                "[call_certified_read_proc] SKIPPED | command '" ~ flags.WHICH
+                ~ "' does not create or replace Snowflake objects — CERTIFIED_READ grants"
+                ~ " cannot have been wiped by this run. Hook only fires for: "
+                ~ object_mutating_cmds | join(', '),
+                info=true
+            ) }}
+            {{ return('') }}
+        {% endif %}
+
+        {% set ignore_packages = ['dbt_project_evaluator'] %}
+        {% set grantable_resource_types = ('model', 'seed', 'snapshot') %}
+        {% set grantable_nodes = [] %}
+        {% for res in results %}
+            {% if res.node.resource_type in grantable_resource_types
+              and res.status in ['success', 'pass']
+              and res.node.package_name not in ignore_packages %}
+                {% do grantable_nodes.append(res.node.unique_id) %}
+            {% endif %}
+        {% endfor %}
+        {% if grantable_nodes | length == 0 %}
+            {{ log(
+                "[call_certified_read_proc] SKIPPED | no user-project "
+                ~ grantable_resource_types | join(' / ')
+                ~ " successfully built (ignoring packages: "
+                ~ ignore_packages | join(', ')
+                ~ ") — CERTIFIED_READ grants cannot have been wiped by this run.",
+                info=true
+            ) }}
+            {{ return('') }}
+        {% endif %}
 
         {# ---------------------f-----------------------------------
            Role guard: fire for DEPLOY roles (CI/CD) and ELT roles (Airflow).
@@ -657,9 +750,66 @@
    The legacy 0-arg GRANT_CROSS_DOMAIN_READ_ACCESS() procedure continues
    to run on its hourly Snowflake Task, acting as a safety net for
    objects tagged directly in Snowflake (outside of dbt runs).
+
+   DPB-2513 guards (evaluated before role/graph iteration):
+     1. Command guard: skip when the current dbt invocation cannot have
+        created or replaced Snowflake objects (test / compile / parse /
+        deps / list / docs / debug / show / clean / init / source ...).
+        Prevents `dbt source freshness` (hooks now run by default in
+        dbt-core 1.10+; flag removed in v2.0) from firing the CALL on
+        every freshness check. Also required for the per-domain
+        <DOMAIN>_TEST role rollout — the read-only test role must not
+        require USAGE on
+        OPS_CUR.UTIL_COMMON.GRANT_CROSS_DOMAIN_READ_ACCESS_BY_DOMAIN.
+        Belt-and-suspenders with the yaml-level guard in dbt_project.yml.
+     2. Metadata-package guard: skip when the only successful grant-
+        holding nodes (models, seeds, snapshots) were from
+        `dbt_project_evaluator`. CI's `dbt build --select
+        package:dbt_project_evaluator+` step never touches nodes that
+        carry CROSS_DOMAIN, so CROSS_DOMAIN_READ grants cannot have been
+        wiped — the CALL would be wasted. Extend the ignore list if new
+        metadata-only packages are added to CI.
+
+        Filter covers `model`, `seed`, and `snapshot` because each
+        materializes as a Snowflake table/view that can hold a
+        CROSS_DOMAIN tag and therefore CROSS_DOMAIN_READ grants.
    ============================================================ #}
 {% macro call_cross_domain_read_proc() %}
     {% if execute %}
+
+        {% set object_mutating_cmds = ['run', 'build', 'seed', 'snapshot', 'clone'] %}
+        {% if flags.WHICH not in object_mutating_cmds %}
+            {{ log(
+                "[call_cross_domain_read_proc] SKIPPED | command '" ~ flags.WHICH
+                ~ "' does not create or replace Snowflake objects — CROSS_DOMAIN_READ grants"
+                ~ " cannot have been wiped by this run. Hook only fires for: "
+                ~ object_mutating_cmds | join(', '),
+                info=true
+            ) }}
+            {{ return('') }}
+        {% endif %}
+
+        {% set ignore_packages = ['dbt_project_evaluator'] %}
+        {% set grantable_resource_types = ('model', 'seed', 'snapshot') %}
+        {% set grantable_nodes = [] %}
+        {% for res in results %}
+            {% if res.node.resource_type in grantable_resource_types
+              and res.status in ['success', 'pass']
+              and res.node.package_name not in ignore_packages %}
+                {% do grantable_nodes.append(res.node.unique_id) %}
+            {% endif %}
+        {% endfor %}
+        {% if grantable_nodes | length == 0 %}
+            {{ log(
+                "[call_cross_domain_read_proc] SKIPPED | no user-project "
+                ~ grantable_resource_types | join(' / ')
+                ~ " successfully built (ignoring packages: "
+                ~ ignore_packages | join(', ')
+                ~ ") — CROSS_DOMAIN_READ grants cannot have been wiped by this run.",
+                info=true
+            ) }}
+            {{ return('') }}
+        {% endif %}
 
         {# --------------------------------------------------------
            Role guard: fire for DEPLOY roles (CI/CD) and ELT roles (Airflow).
