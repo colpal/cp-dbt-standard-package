@@ -1,7 +1,12 @@
 name: Jira PR Description
 
 on:
-  pull_request:
+  # pull_request_target runs in the BASE repo's context: Jira secrets are
+  # available and GITHUB_TOKEN is write-capable even for fork PRs (plain
+  # pull_request gets no secrets and a read-only token from forks).
+  # Safe here because the workflow never checks out or executes PR code —
+  # it only reads the branch name and edits the PR body via the GitHub API.
+  pull_request_target:
     types: [opened, reopened, synchronize]
 
 concurrency:
@@ -16,47 +21,45 @@ jobs:
   update-pr-description:
     runs-on: ubuntu-latest
     steps:
-      - name: Install GitHub CLI
-        run: |
-          # 1. Define version and detect architecture
-          GH_VER="2.82.1"
-          ARCH="$(dpkg --print-architecture)"
-          DEB_NAME="gh_${GH_VER}_linux_${ARCH}.deb"
-
-          # 2. Download using curl (since wget is missing)
-          # -L follows redirects, -O saves the file with its original name
-          curl -LO "https://github.com/cli/cli/releases/download/v${GH_VER}/${DEB_NAME}"
-
-          # 3. Install
-          sudo dpkg -i "${DEB_NAME}"
-
-          # 4. Cleanup
-          rm "${DEB_NAME}"
-
       - name: Extract Jira Story Key from Branch Name
         id: extract
+        env:
+          # Fork-controlled input must flow through env, never inline ${{ }}.
+          BRANCH_NAME: ${{ github.head_ref }}
         run: |
-          BRANCH_NAME="${{ github.head_ref }}"
-          UPPER_BRANCH=$(echo "$BRANCH_NAME" | tr '[:lower:]' '[:upper:]' | sed 's/_/-/g')
-          STORY_KEY=$(echo "$UPPER_BRANCH" | grep -oE '[A-Z]{2,5}-[0-9]+' | head -n 1)
+          UPPER_BRANCH=$(printf '%s' "$BRANCH_NAME" | tr '[:lower:]' '[:upper:]' | sed 's/_/-/g')
+          STORY_KEY=$(printf '%s' "$UPPER_BRANCH" | grep -oE '[A-Z]{2,5}-[0-9]+' | head -n 1 || true)
           if [ -z "$STORY_KEY" ]; then
             echo "No Jira key found — skipping PR update"
-            exit 0
           fi
-          echo "JIRA_KEY=$STORY_KEY" >> $GITHUB_ENV
+          echo "jira_key=$STORY_KEY" >> "$GITHUB_OUTPUT"
 
       - name: Fetch Jira Story Details
         id: jira
+        if: steps.extract.outputs.jira_key != ''
+        env:
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          JIRA_KEY: ${{ steps.extract.outputs.jira_key }}
         run: |
-          JIRA_API_URL="${{ secrets.JIRA_BASE_URL }}/rest/api/3/issue/${{ env.JIRA_KEY }}"
-          RESPONSE=$(curl -s -u "${{ secrets.JIRA_USER_EMAIL }}:${{ secrets.JIRA_API_TOKEN }}" \
-            -H "Accept: application/json" "$JIRA_API_URL")
+          # Fork PRs and contexts without secrets must skip cleanly instead of
+          # dying on curl exit 3 (hostless URL when JIRA_BASE_URL is empty).
+          if [ -z "$JIRA_BASE_URL" ] || [ -z "$JIRA_USER_EMAIL" ] || [ -z "$JIRA_API_TOKEN" ]; then
+            echo "::notice::Jira secrets unavailable in this context — skipping PR update"
+            exit 0
+          fi
 
-          # --- UPDATED JQ COMMANDS FOR CORRECT FORMATTING ---
+          if ! RESPONSE=$(curl -sSf -u "$JIRA_USER_EMAIL:$JIRA_API_TOKEN" \
+            -H "Accept: application/json" \
+            "$JIRA_BASE_URL/rest/api/3/issue/$JIRA_KEY"); then
+            echo "::warning::Jira fetch failed for $JIRA_KEY — skipping PR update"
+            exit 0
+          fi
 
           SUMMARY=$(echo "$RESPONSE" | jq -r '.fields.summary')
 
-          # This new query finds each paragraph, joins all text within it,
+          # This query finds each paragraph, joins all text within it,
           # and then joins all paragraphs with a newline.
           DESCRIPTION=$(echo "$RESPONSE" | jq -r '
             .fields.description.content |
@@ -85,28 +88,31 @@ jobs:
             join("\n")
           ' 2>/dev/null || echo "No acceptance criteria")
 
-          # --- Use heredoc syntax to save multiline strings (this part is correct) ---
-
-          echo "SUMMARY<<EOF" >> $GITHUB_ENV
-          echo "$SUMMARY" >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
-
-          echo "DESCRIPTION<<EOF" >> $GITHUB_ENV
-          echo "$DESCRIPTION" >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
-
-          echo "ACCEPTANCE_CRITERIA<<EOF" >> $GITHUB_ENV
-          echo "$ACCEPTANCE_CRITERIA" >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
+          # Heredoc-style multiline env vars; distinctive delimiter so Jira
+          # text containing "EOF" cannot terminate a value early.
+          {
+            echo "SUMMARY<<JIRA_ENV_EOF"
+            echo "$SUMMARY"
+            echo "JIRA_ENV_EOF"
+            echo "DESCRIPTION<<JIRA_ENV_EOF"
+            echo "$DESCRIPTION"
+            echo "JIRA_ENV_EOF"
+            echo "ACCEPTANCE_CRITERIA<<JIRA_ENV_EOF"
+            echo "$ACCEPTANCE_CRITERIA"
+            echo "JIRA_ENV_EOF"
+          } >> "$GITHUB_ENV"
 
       - name: Update Pull Request Description
+        # Skipped when extraction found no key or the fetch step bailed out.
+        if: env.SUMMARY != '' && env.SUMMARY != 'null'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          JIRA_URL: ${{ secrets.JIRA_BASE_URL }}
         run: |
-          PR_NUMBER=${{ github.event.pull_request.number }}
-
           AUTO_START="<!-- JIRA-AUTO-START -->"
           AUTO_END="<!-- JIRA-AUTO-END -->"
-
-          JIRA_URL="${{ secrets.JIRA_BASE_URL }}"
 
           # 1. Get current PR body
           CURRENT_BODY=$(gh pr view "$PR_NUMBER" --json body --jq '.body // ""')
@@ -178,6 +184,3 @@ jobs:
 
           # 5. Update PR safely
           gh pr edit "$PR_NUMBER" --body-file final_body.txt
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
