@@ -1,5 +1,5 @@
 {#
-  Snowflake Tagging Package (`dbt_snowflake_tagging`)
+  Snowflake Tagging Package ('dbt_snowflake_tagging')
   ----------------------------------------------------
     A set of macros to apply centrally created Snowflake tags to dbt models and columns
     based on configurations in schema YAML files.
