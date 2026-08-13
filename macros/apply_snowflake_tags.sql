@@ -1,5 +1,5 @@
 {#
-  Snowflake Tagging Package (`dbt_snowflake_tagging`)
+  Snowflake Tagging Package ('dbt_snowflake_tagging')
   ----------------------------------------------------
     A set of macros to apply centrally created Snowflake tags to dbt models and columns
     based on configurations in schema YAML files.
@@ -44,6 +44,36 @@
         'tag_schema': 'TAGS'
     } %}
     {{ return(config) }}
+{% endmacro %}
+
+{# ============================================================
+   RESOLVE TAGGING ROLE
+   Tag DDL must run as the role that owns the target object.
+   Uses the target database name (not just target.role) so a
+   CUR-session tagging CON-layer objects switches to CON, and a
+   CUR-session tagging CUR-layer objects (e.g. iceberg tables in
+   _PR_{N}_{DOMAIN}_CUR) does NOT switch. Iceberg tables enforce
+   strict OWNERSHIP for ALTER SET TAG, which is what surfaced this
+   bug in DPB-2591.
+
+   Layer inference (see data-platforms-infrastructure AGENTS.md):
+     {DOMAIN}_CUR / {DOMAIN}_CON                  (prod)
+     {DOMAIN}_CUR_PD / {DOMAIN}_CON_PD            (pre-deploy)
+     _PR_{N}_{DOMAIN}_CUR / _PR_{N}_{DOMAIN}_CON  (PR preview)
+   -> a trailing `_CON` or `_CON_PD` means CON layer; anything else CUR.
+   Returns none if no switch is needed.
+   ============================================================ #}
+{% macro get_tagging_role(database_nm) %}
+    {% set current_role = target.role | upper %}
+    {% set db_upper = database_nm | upper %}
+    {% set is_con_layer = db_upper.endswith('_CON') or db_upper.endswith('_CON_PD') %}
+
+    {% if is_con_layer and '_DEPLOY_CUR' in current_role %}
+        {{ return(current_role | replace('_DEPLOY_CUR', '_DEPLOY_CON')) }}
+    {% elif (not is_con_layer) and '_DEPLOY_CON' in current_role %}
+        {{ return(current_role | replace('_DEPLOY_CON', '_DEPLOY_CUR')) }}
+    {% endif %}
+    {{ return(none) }}
 {% endmacro %}
 
 -- retrieve all available Snowflake tags from central schema
@@ -95,9 +125,10 @@
 
 {# ============================================================
    APPLY TAG TO MODEL
-   Supports: .strip() whitespace handling, optional relation_type (skip DB query)
+   Supports: .strip() whitespace handling, optional relation_type (skip DB query),
+   optional is_iceberg (skip adapter.get_relation query when caller already knows)
    ============================================================ #}
-{% macro apply_tag(database_nm, schema, identifier, tag_name, tag_value, relation_type=none) %}
+{% macro apply_tag(database_nm, schema, identifier, tag_name, tag_value, relation_type=none, is_iceberg=none) %}
 
     {% set available_tags = cp_dbt_standard_package.get_snowflake_tags(show_log=false) %}
     {% set config = cp_dbt_standard_package.get_tag_config() %}
@@ -140,29 +171,59 @@
         {% set tag_value = val_ns.matched_value %}
     {% endif %}
 
-    {# Identify relation type (use passed value if available, otherwise query) #}
-    {% if not relation_type %}
+    {# Identify relation type and Iceberg format.
+       When the caller (tag_models_on_run_end) passes both relation_type and
+       is_iceberg, we skip the adapter.get_relation() Snowflake metadata query
+       entirely — saving one network round-trip per tag application.
+       Fallback: if is_iceberg is not provided, query Snowflake as before. #}
+    {% if is_iceberg is none or not relation_type %}
         {% set relation = adapter.get_relation(database_nm, schema, identifier) %}
-        {% set relation_type = relation.type | upper if relation else 'TABLE' %}
+        {% if not relation_type %}
+            {% set relation_type = relation.type | upper if relation else 'TABLE' %}
+        {% endif %}
+        {% if is_iceberg is none %}
+            {% set is_iceberg = (relation.is_iceberg_format if relation else false) %}
+        {% endif %}
     {% endif %}
 
+    {# Iceberg tables require ALTER ICEBERG TABLE; views must not use ICEBERG prefix #}
+    {% set ddl_prefix = 'ICEBERG ' if is_iceberg and relation_type == 'TABLE' else '' %}
+    {# --------------------------------------------------------
+       Role switch: tag DDL must run as {domain}_DEPLOY_CON,
+       not {domain}_DEPLOY_CUR. Switch only if needed, and
+       always restore the session role afterwards.
+       -------------------------------------------------------- #}
+    {% set original_role = target.role | upper %}
+    {% set tagging_role = cp_dbt_standard_package.get_tagging_role(database_nm) %}
+
+    {% if tagging_role %}
+        {{ log("Switching role " ~ original_role ~ " -> " ~ tagging_role ~ " for tag DDL", info=true) }}
+        {% do run_query('USE ROLE ' ~ tagging_role) %}
+    {% endif %}
+  
     {# Apply tag #}
     {% set sql %}
-      ALTER {{ relation_type }} {{ database_nm }}.{{ schema }}.{{ identifier }}
+      ALTER {{ ddl_prefix }}{{ relation_type }} {{ database_nm }}.{{ schema }}.{{ identifier }}
       SET TAG {{ config.tag_database }}.{{ config.tag_schema }}.{{ tag_name }} = '{{ tag_value }}'
     {% endset %}
 
     {% do run_query(sql) %}
     {{ log("Applied tag '" ~ tag_name ~ "' to " ~ schema ~ "." ~ identifier, info=true) }}
 
+    {# Restore original session role #}
+    {% if tagging_role %}
+        {% do run_query('USE ROLE ' ~ original_role) %}
+    {% endif %}
+  
 {% endmacro %}
 
 
 {# ============================================================
    APPLY COLUMN TAG
-   Supports: .strip() whitespace handling, optional relation_type (skip DB query)
+   Supports: .strip() whitespace handling, optional relation_type (skip DB query),
+   optional is_iceberg (skip adapter.get_relation query when caller already knows)
    ============================================================ #}
-{% macro apply_column_tag(database_nm, schema, identifier, column_name, tag_name, tag_value, relation_type=none) %}
+{% macro apply_column_tag(database_nm, schema, identifier, column_name, tag_name, tag_value, relation_type=none, is_iceberg=none) %}
 
     {% set available_tags = cp_dbt_standard_package.get_snowflake_tags(show_log=false) %}
     {% set config = cp_dbt_standard_package.get_tag_config() %}
@@ -203,14 +264,33 @@
         {% set tag_value = val_ns.matched_value %}
     {% endif %}
 
-    {# Use passed relation_type if available, otherwise query #}
-    {% if not relation_type %}
+    {# Identify relation type and Iceberg format — same optimization as apply_tag. #}
+    {% if is_iceberg is none or not relation_type %}
         {% set relation = adapter.get_relation(database_nm, schema, identifier) %}
-        {% set relation_type = relation.type | upper if relation else 'TABLE' %}
+        {% if not relation_type %}
+            {% set relation_type = relation.type | upper if relation else 'TABLE' %}
+        {% endif %}
+        {% if is_iceberg is none %}
+            {% set is_iceberg = (relation.is_iceberg_format if relation else false) %}
+        {% endif %}
     {% endif %}
 
+    {# Iceberg tables require ALTER ICEBERG TABLE; views must not use ICEBERG prefix #}
+    {% set ddl_prefix = 'ICEBERG ' if is_iceberg and relation_type == 'TABLE' else '' %}
+    {# --------------------------------------------------------
+       Role switch: tag DDL must run as {domain}_DEPLOY_CON,
+       not {domain}_DEPLOY_CUR. Switch only if needed, and
+       always restore the session role afterwards.
+       -------------------------------------------------------- #}
+    {% set original_role = target.role | upper %}
+    {% set tagging_role = cp_dbt_standard_package.get_tagging_role(database_nm) %}
+    {% if tagging_role %}
+        {{ log("Switching role " ~ original_role ~ " -> " ~ tagging_role ~ " for tag DDL", info=true) }}
+        {% do run_query('USE ROLE ' ~ tagging_role) %}
+    {% endif %}
+  
     {% set sql %}
-      ALTER {{ relation_type }} {{ database_nm }}.{{ schema }}.{{ identifier }}
+      ALTER {{ ddl_prefix }}{{ relation_type }} {{ database_nm }}.{{ schema }}.{{ identifier }}
       MODIFY COLUMN {{ column_name }}
       SET TAG {{ config.tag_database }}.{{ config.tag_schema }}.{{ tag_name }} = '{{ tag_value }}'
     {% endset %}
@@ -218,6 +298,11 @@
     {% do run_query(sql) %}
     {{ log("Applied column tag '" ~ tag_name ~ "' to " ~ column_name ~ " in " ~ schema ~ "." ~ identifier, info=true) }}
 
+    {# Restore original session role #}
+    {% if tagging_role %}
+        {% do run_query('USE ROLE ' ~ original_role) %}
+    {% endif %}
+  
 {% endmacro %}
 
 
@@ -253,7 +338,18 @@
                 {% set mat = node.config.materialized %}
                 {% set rel_type = 'VIEW' if mat == 'view' else 'TABLE' %}
 
-                {{ log("Processing model: " ~ model_database ~ "." ~ model_schema ~ "." ~ model_name, info=true) }}
+                {# Detect Iceberg from dbt config — avoids querying Snowflake
+                   metadata (adapter.get_relation) for every tag application.
+                   A model is Iceberg if table_format='iceberg' or catalog_name is set.
+                   Views use ALTER VIEW DDL (never ALTER ICEBERG VIEW). #}
+                {% set catalog_nm = node.config.get('catalog_name') %}
+                {% set model_is_iceberg = (node.config.get('table_format', '') == 'iceberg')
+                    or (catalog_nm is not none and catalog_nm | string | length > 0) %}
+                {% if rel_type == 'VIEW' %}
+                    {% set model_is_iceberg = false %}
+                {% endif %}
+
+                {{ log("Processing model: " ~ model_database ~ "." ~ model_schema ~ "." ~ model_name ~ (" [iceberg]" if model_is_iceberg else ""), info=true) }}
 
                 {# Table-level tags — check both config.snowflake_tags and config.meta.snowflake_tags #}
                 {% set model_tags = node.config.get('snowflake_tags', {}) %}
@@ -261,11 +357,11 @@
 
                 {% if meta_tags %}
                     {% for tag_name, tag_value in meta_tags.items() %}
-                        {{ cp_dbt_standard_package.apply_tag(model_database, model_schema, model_name, tag_name, tag_value, rel_type) }}
+                        {{ cp_dbt_standard_package.apply_tag(model_database, model_schema, model_name, tag_name, tag_value, rel_type, model_is_iceberg) }}
                     {% endfor %}
                 {% elif model_tags %}
                     {% for tag_name, tag_value in model_tags.items() %}
-                        {{ cp_dbt_standard_package.apply_tag(model_database, model_schema, model_name, tag_name, tag_value, rel_type) }}
+                        {{ cp_dbt_standard_package.apply_tag(model_database, model_schema, model_name, tag_name, tag_value, rel_type, model_is_iceberg) }}
                     {% endfor %}
                 {% endif %}
 
@@ -273,7 +369,7 @@
                 {% for col_name, col in node.columns.items() %}
                     {% if col.meta is defined and col.meta.snowflake_tags is defined %}
                         {% for tag_name, tag_value in col.meta.snowflake_tags.items() %}
-                            {{ cp_dbt_standard_package.apply_column_tag(model_database, model_schema, model_name, col_name, tag_name, tag_value, rel_type) }}
+                            {{ cp_dbt_standard_package.apply_column_tag(model_database, model_schema, model_name, col_name, tag_name, tag_value, rel_type, model_is_iceberg) }}
                         {% endfor %}
                     {% endif %}
                 {% endfor %}
@@ -310,11 +406,461 @@
 
 {# ============================================================
    CALL CERTIFIED READ PROCEDURE (on-run-end)
-   Calls the Snowflake stored procedure to apply certified read grants after dbt runs
+
+   Zero-latency, domain-scoped alternative to the hourly
+   TAG_BASED_RBAC_CERT_PROC task.
+
+   Instead of querying SNOWFLAKE.ACCOUNT_USAGE (latency up to 2h),
+   this macro reads the dbt graph at runtime to build a complete
+   manifest of certified objects, then passes it directly to the
+   stored procedure as a JSON string.
+
+   Domain segregation is enforced: one CALL per target database,
+   so FIN_CON models cannot trigger grants on MD_CON, etc.
+
+   Guard: only fires when the Snowflake session role contains 'DEPLOY'
+   (e.g. EX_DEPLOY_CUR, FIN_DEPLOY_CON). This prevents the procedure
+   from being called during local developer or analyst runs.
+
+   The legacy 0-arg GRANT_CERTIFIED_READ_ACCESS() procedure continues
+   to run on its hourly Snowflake Task, acting as a safety net for
+   objects tagged directly in Snowflake (outside of dbt runs).
    ============================================================ #}
 {% macro call_certified_read_proc() %}
     {% if execute %}
-        {{ log("Calling GRANT_CERTIFIED_READ_ACCESS procedure to apply certified read grants", info=true) }}
-        {% do run_query("CALL OPS_CUR.UTIL_COMMON.GRANT_CERTIFIED_READ_ACCESS()") %}
+
+        {# ---------------------f-----------------------------------
+           Role guard: fire for DEPLOY roles (CI/CD) and ELT roles (Airflow).
+           Both can rebuild models (DROP + CREATE) which wipes all Snowflake
+           object-level grants including CROSS_DOMAIN_READ.SELECT. The proc must
+           run on-run-end to reapply grants immediately rather than waiting
+           up to 60 min for the hourly GRANT_CERTIFIED_READ_ACCESS task.
+
+           ELT safety: execute_as = OWNER on the proc means the actual GRANT
+           DDL runs as the OPS owner — not the ELT role itself. ELT only
+           needs EXECUTE (USAGE) on the procedure.
+           -------------------------------------------------------- #}
+        {% set role_upper = target.role | upper %}
+        {% if 'DEPLOY' in role_upper or 'ELT' in role_upper %}
+
+
+        {# --------------------------------------------------------
+           Step 1: Walk the full graph and collect every certified model,
+           grouped by its resolved target database.
+
+           Always runs — even in PR/PD environments — so CI logs show
+           exactly which domains and objects would have grants applied
+           (dry-run visibility). The actual CALL is gated separately.
+
+           We iterate ALL nodes (not just `results`) so the manifest
+           always contains the complete certified set, including models
+           not rebuilt in this run but whose grants must remain active.
+           -------------------------------------------------------- #}
+        {% set certified_read_by_db = {} %}
+        {% set skipped_ephemeral = [] %}
+        {% for node_id, node in graph.nodes.items() %}
+            {% if node.resource_type == 'model' %}
+                {# Resolve CERTIFIED_READ from either tag location:
+                - config.snowflake_tags (set via dbt model config)
+                - config.meta.snowflake_tags (set via meta block) #}
+                {% set model_tags  = node.config.get('snowflake_tags', {}) %}
+                {% set meta_tags   = node.config.get('meta', {}).get('snowflake_tags', {}) %}
+                {% set certified_read = false %}
+                {% if model_tags.get('IS_CERTIFIED', '') | upper == 'TRUE' %}
+                    {% set certified_read = true %}
+                {% elif meta_tags.get('IS_CERTIFIED', '') | upper == 'TRUE' %}
+                    {% set certified_read = true %}
+                {% endif %}
+                {% if certified_read %}
+                    {% set mat = node.config.materialized %}
+                    {# Ephemeral models produce no physical relation. Sending
+                       them into the by-domain proc would fail with 002003 the
+                       first time GRANT SELECT ON TABLE ... hits the target.
+                       Collect the names for a single roll-up log below and
+                       skip the manifest entry. #}
+                    {% if mat == 'ephemeral' %}
+                        {% do skipped_ephemeral.append(node.name) %}
+                    {% else %}
+                        {% set db = node.database | upper %}
+                        {# Normalize ephemeral env suffixes back to the production database name.
+                           Split from the LEFT with fixed segment offsets — the previous
+                           `db.split('_PR_')[0]` yields '' for real PR DB names like
+                           `_PR_67_FIN_CON` (they start with `_PR_`, so the first token is empty).
+                             _PR_{N}_{DOMAIN}_{LAYER} -> parts[3:] = [DOMAIN, LAYER] -> DOMAIN_LAYER
+                             {DOMAIN}_{LAYER}_PD      -> strip trailing _PD
+                             {DOMAIN}_{LAYER}         -> unchanged (prod) #}
+                        {% if db.startswith('_PR_') %}
+                            {% set parts = db.split('_') %}
+                            {% set db = parts[3:] | join('_') %}
+                        {% elif db.endswith('_PD') %}
+                            {% set db = db[:-3] %}
+                        {% endif %}
+                        {% set obj_type = 'VIEW' if mat == 'view' else 'TABLE' %}
+                        {% if db not in certified_read_by_db %}
+                            {% do certified_read_by_db.update({db: []}) %}
+                        {% endif %}
+                        {% do certified_read_by_db[db].append({
+                            'schema': node.schema | upper,
+                            'name':   (node.config.get('alias') or node.name) | upper,
+                            'type':   obj_type
+                        }) %}
+                    {% endif %}
+                {% endif %}
+            {% endif %}
+        {% endfor %}
+
+        {% if skipped_ephemeral | length > 0 %}
+            {{ log(
+                "[certified_read_grants] SKIPPED " ~ skipped_ephemeral | length
+                ~ " ephemeral IS_CERTIFIED model(s): " ~ skipped_ephemeral | join(', ')
+                ~ " — ephemeral models produce no physical relation and cannot receive grants.",
+                info=true
+            ) }}
+        {% endif %}
+
+        {# --------------------------------------------------------
+           Step 2: Call GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN once per
+           domain database, passing the scoped JSON manifest.
+
+           In PR / PD environments: log the manifest as a dry run only.
+           No CALL is made -- the hourly task is the safety net for
+           ephemeral environments.
+
+           In production: execute the CALL.
+           -------------------------------------------------------- #}
+        {% set db_upper = target.database | upper %}
+        {% set is_ephemeral = '_PR_' in db_upper or db_upper.endswith('_PD') %}
+        {% set github_event = env_var('GITHUB_EVENT_NAME', '') | lower %}
+        {% set is_push_merge = github_event in ['push', 'merge_group'] %}
+
+        {% if certified_read_by_db | length > 0 %}
+            {% if not is_push_merge %}
+                {# ── DRY RUN (PR / non-merge event): log what production would do, no CALL issued ── #}
+                {{ log(
+                    "[certified_read_grants] DRY RUN | event: " ~ (github_event if github_event else 'unknown/local')
+                    ~ " | env: " ~ target.database
+                    ~ " | role: " ~ target.role
+                    ~ " | The following domain(s) would have GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN"
+                    ~ " called if this were a push/merge run:",
+                    info=true
+                ) }}
+                {% for domain_db, objects in certified_read_by_db.items() %}
+                    {{ log(
+                        "[certified_read_grants]   domain: " ~ domain_db
+                        ~ "  certified read: " ~ objects | length,
+                        info=true
+                    ) }}
+                {% endfor %}
+                {{ log(
+                    "[certified_read_grants] No grants issued — pull request runs do not hold CERTIFIED_READ grants."
+                    ~ " The hourly TAG_BASED_RBAC_CERTIFIED_READ_PROC task is the safety net for this environment.",
+                    info=true
+                ) }}
+            {% else %}
+                {# ── PUSH/MERGE (production): call the proc once per domain ── #}
+                {# Role switch: the grant proc must run as {domain}_DEPLOY_CON,
+                not {domain}_DEPLOY_CUR. Switch once for the whole loop and
+                always restore the session role afterwards.
+                get_tagging_role requires a database name to infer the CUR/CON
+                layer; pass target.database so a CUR-session tagging CON-layer
+                objects correctly switches to the CON deploy role. #}
+                {% set original_role = target.role | upper %}
+                {% set grant_role = cp_dbt_standard_package.get_tagging_role(target.database) %}
+                {% if grant_role %}
+                    {{ log(
+                        "[certified_read_grants] Switching role " ~ original_role
+                        ~ " -> " ~ grant_role ~ " for grant proc calls",
+                        info=true
+                    ) }}
+                    {% do run_query('USE ROLE ' ~ grant_role) %}
+                {% endif %}
+
+                {% for domain_db, objects in certified_read_by_db.items() %}
+                    {% set json_payload = tojson(objects) %}
+                    {{ log(
+                        "[certified_read_grants] CALLING | event: " ~ github_event
+                        ~ " | domain: " ~ domain_db
+                        ~ " | certified read objects: " ~ objects | length
+                        ~ " | role: " ~ (grant_role if grant_role else original_role),
+                        info=true
+                    ) }}
+                    {# Snowflake single-quoted string literal escape is a doubled
+                       apostrophe (''), not a backslash. The prior `\'` escape
+                       leaves a raw ' inside the literal and breaks the payload
+                       whenever an object name contains an apostrophe. #}
+                    {% set call_sql %}
+                        CALL OPS_CUR.UTIL_COMMON.GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN(
+                            '{{ domain_db }}',
+                            '{{ json_payload | replace("'", "''") }}')
+                    {% endset %}
+                    {% do run_query(call_sql) %}
+                {% endfor %}
+
+                {# Restore original session role #}
+                {% if grant_role %}
+                    {% do run_query('USE ROLE ' ~ original_role) %}
+                {% endif %}
+            {% endif %}
+        {% else %}
+            {% if not is_push_merge %}
+                {{ log(
+                    "[certified_read_grants] SKIPPED | event: " ~ (github_event if github_event else 'unknown/local')
+                    ~ " | env: " ~ target.database
+                    ~ " | No certified read models found targeting production databases."
+                    ~ " In PR/PD runs, all node.database values resolve to ephemeral databases"
+                    ~ " (_PR_*/_PD) and are excluded from grant processing by design.",
+                    info=true
+                ) }}
+            {% else %}
+                {# Tag name is IS_CERTIFIED (as configured on models). Prior log
+                   said CERTIFIED_READ, which is the database-role name, not the
+                   tag name — misleading for anyone grepping the CI log. #}
+                {{ log(
+                    "[certified_read_grants] SKIPPED | No models with IS_CERTIFIED=TRUE found in the dbt graph."
+                    ~ " Verify that certified read models have snowflake_tags: {IS_CERTIFIED: 'TRUE'} in their config.",
+                    info=true
+                ) }}
+            {% endif %}
+        {% endif %} {# certified_read_by_db length check #}
+
+        {% else %}
+            {{ log(
+                "[certified_read_grants] SKIPPED | role: '" ~ target.role
+                ~ "' is not a DEPLOY or ELT role — cross domain grant reconciliation only runs"
+                ~ " for deployment and Airflow pipeline roles to prevent analyst runs from"
+                ~ " triggering privilege changes.",
+                info=true
+            ) }}
+        {% endif %} {# DEPLOY / ELT role guard #}
+
+    {% endif %}
+{% endmacro %}
+
+{# ============================================================
+   CALL CROSS_DOMAIN READ PROCEDURE (on-run-end)
+
+   Zero-latency, domain-scoped alternative to the hourly
+   TAG_BASED_RBAC_CROSS_DOMAIN_PROC task.
+
+   Instead of querying SNOWFLAKE.ACCOUNT_USAGE (latency up to 2h),
+   this macro reads the dbt graph at runtime to build a complete
+   manifest of certified objects, then passes it directly to the
+   stored procedure as a JSON string.
+
+   Domain segregation is enforced: one CALL per target database,
+   so FIN_CON models cannot trigger grants on MD_CON, etc.
+
+   Guard: only fires when the Snowflake session role contains 'DEPLOY'
+   (e.g. EX_DEPLOY_CUR, FIN_DEPLOY_CON). This prevents the procedure
+   from being called during local developer or analyst runs.
+
+   The legacy 0-arg GRANT_CROSS_DOMAIN_READ_ACCESS() procedure continues
+   to run on its hourly Snowflake Task, acting as a safety net for
+   objects tagged directly in Snowflake (outside of dbt runs).
+   ============================================================ #}
+{% macro call_cross_domain_read_proc() %}
+    {% if execute %}
+
+        {# --------------------------------------------------------
+           Role guard: fire for DEPLOY roles (CI/CD) and ELT roles (Airflow).
+           Both can rebuild models (DROP + CREATE) which wipes all Snowflake
+           object-level grants including CROSS_DOMAIN_READ.SELECT. The proc must
+           run on-run-end to reapply grants immediately rather than waiting
+           up to 60 min for the hourly GRANT_CROSS_DOMAIN_READ_ACCESS task.
+
+           ELT safety: execute_as = OWNER on the proc means the actual GRANT
+           DDL runs as the OPS owner — not the ELT role itself. ELT only
+           needs EXECUTE (USAGE) on the procedure.
+           -------------------------------------------------------- #}
+        {% set role_upper = target.role | upper %}
+        {% if 'DEPLOY' in role_upper or 'ELT' in role_upper %}
+
+
+        {# --------------------------------------------------------
+           Step 1: Walk the full graph and collect every certified model,
+           grouped by its resolved target database.
+
+           Always runs — even in PR/PD environments — so CI logs show
+           exactly which domains and objects would have grants applied
+           (dry-run visibility). The actual CALL is gated separately.
+
+           We iterate ALL nodes (not just `results`) so the manifest
+           always contains the complete certified set, including models
+           not rebuilt in this run but whose grants must remain active.
+           -------------------------------------------------------- #}
+        {% set cross_domain_by_db = {} %}
+        {% set skipped_ephemeral = [] %}
+        {% for node_id, node in graph.nodes.items() %}
+            {% if node.resource_type == 'model' %}
+                {# Resolve CROSS_DOMAIN from either tag location:
+                - config.snowflake_tags (set via dbt model config)
+                - config.meta.snowflake_tags (set via meta block) #}
+                {% set model_tags  = node.config.get('snowflake_tags', {}) %}
+                {% set meta_tags   = node.config.get('meta', {}).get('snowflake_tags', {}) %}
+                {% set cross_domain = false %}
+                {% if model_tags.get('CROSS_DOMAIN', '') | upper == 'TRUE' %}
+                    {% set cross_domain = true %}
+                {% elif meta_tags.get('CROSS_DOMAIN', '') | upper == 'TRUE' %}
+                    {% set cross_domain = true %}
+                {% endif %}
+                {% if cross_domain %}
+                    {% set mat = node.config.materialized %}
+                    {# Ephemeral models produce no physical relation. Sending
+                       them into the by-domain proc would fail with 002003 the
+                       first time GRANT SELECT ON TABLE ... hits the target.
+                       Collect the names for a single roll-up log below and
+                       skip the manifest entry. #}
+                    {% if mat == 'ephemeral' %}
+                        {% do skipped_ephemeral.append(node.name) %}
+                    {% else %}
+                        {% set db = node.database | upper %}
+                        {# Normalize ephemeral env suffixes back to the production database name.
+                           Split from the LEFT with fixed segment offsets — the previous
+                           `db.split('_PR_')[0]` yields '' for real PR DB names like
+                           `_PR_67_FIN_CON` (they start with `_PR_`, so the first token is empty).
+                             _PR_{N}_{DOMAIN}_{LAYER} -> parts[3:] = [DOMAIN, LAYER] -> DOMAIN_LAYER
+                             {DOMAIN}_{LAYER}_PD      -> strip trailing _PD
+                             {DOMAIN}_{LAYER}         -> unchanged (prod) #}
+                        {% if db.startswith('_PR_') %}
+                            {% set parts = db.split('_') %}
+                            {% set db = parts[3:] | join('_') %}
+                        {% elif db.endswith('_PD') %}
+                            {% set db = db[:-3] %}
+                        {% endif %}
+                        {% set obj_type = 'VIEW' if mat == 'view' else 'TABLE' %}
+                        {% if db not in cross_domain_by_db %}
+                            {% do cross_domain_by_db.update({db: []}) %}
+                        {% endif %}
+                        {% do cross_domain_by_db[db].append({
+                            'schema': node.schema | upper,
+                            'name':   (node.config.get('alias') or node.name) | upper,
+                            'type':   obj_type
+                        }) %}
+                    {% endif %}
+                {% endif %}
+            {% endif %}
+        {% endfor %}
+
+        {% if skipped_ephemeral | length > 0 %}
+            {{ log(
+                "[cross_domain_grants] SKIPPED " ~ skipped_ephemeral | length
+                ~ " ephemeral CROSS_DOMAIN model(s): " ~ skipped_ephemeral | join(', ')
+                ~ " — ephemeral models produce no physical relation and cannot receive grants.",
+                info=true
+            ) }}
+        {% endif %}
+
+        {# --------------------------------------------------------
+           Step 2: Call GRANT_CROSS_DOMAIN_READ_ACCESS_BY_DOMAIN once per
+           domain database, passing the scoped JSON manifest.
+
+           In PR / PD environments: log the manifest as a dry run only.
+           No CALL is made -- the hourly task is the safety net for
+           ephemeral environments.
+
+           In production: execute the CALL.
+           -------------------------------------------------------- #}
+        {% set db_upper = target.database | upper %}
+        {% set is_ephemeral = '_PR_' in db_upper or db_upper.endswith('_PD') %}
+        {% set github_event = env_var('GITHUB_EVENT_NAME', '') | lower %}
+        {% set is_push_merge = github_event in ['push', 'merge_group'] %}
+
+        {% if cross_domain_by_db | length > 0 %}
+            {% if not is_push_merge %}
+                {# ── DRY RUN (PR / non-merge event): log what production would do, no CALL issued ── #}
+                {{ log(
+                    "[cross_domain_grants] DRY RUN | event: " ~ (github_event if github_event else 'unknown/local')
+                    ~ " | env: " ~ target.database
+                    ~ " | role: " ~ target.role
+                    ~ " | The following domain(s) would have GRANT_CROSS_DOMAIN_READ_ACCESS_BY_DOMAIN"
+                    ~ " called if this were a push/merge run:",
+                    info=true
+                ) }}
+                {% for domain_db, objects in cross_domain_by_db.items() %}
+                    {{ log(
+                        "[cross_domain_grants]   domain: " ~ domain_db
+                        ~ "  cross domain objects: " ~ objects | length,
+                        info=true
+                    ) }}
+                {% endfor %}
+                {{ log(
+                    "[cross_domain_grants] No grants issued — pull request runs do not hold CROSS_DOMAIN_READ grants."
+                    ~ " The hourly TAG_BASED_RBAC_CROSS_DOMAIN_PROC task is the safety net for this environment.",
+                    info=true
+                ) }}
+            {% else %}
+                {# ── PUSH/MERGE (production): call the proc once per domain ── #}
+                {# Role switch: the grant proc must run as {domain}_DEPLOY_CON,
+                not {domain}_DEPLOY_CUR. Switch once for the whole loop and
+                always restore the session role afterwards.
+                get_tagging_role requires a database name to infer the CUR/CON
+                layer; pass target.database so a CUR-session tagging CON-layer
+                objects correctly switches to the CON deploy role. #}
+                {% set original_role = target.role | upper %}
+                {% set grant_role = cp_dbt_standard_package.get_tagging_role(target.database) %}
+                {% if grant_role %}
+                    {{ log(
+                        "[cross_domain_grants] Switching role " ~ original_role
+                        ~ " -> " ~ grant_role ~ " for grant proc calls",
+                        info=true
+                    ) }}
+                    {% do run_query('USE ROLE ' ~ grant_role) %}
+                {% endif %}
+
+                {% for domain_db, objects in cross_domain_by_db.items() %}
+                    {% set json_payload = tojson(objects) %}
+                    {{ log(
+                        "[cross_domain_grants] CALLING | event: " ~ github_event
+                        ~ " | domain: " ~ domain_db
+                        ~ " | cross domain objects: " ~ objects | length
+                        ~ " | role: " ~ (grant_role if grant_role else original_role),
+                        info=true
+                    ) }}
+                    {# Snowflake single-quoted string literal escape is a doubled
+                       apostrophe (''), not a backslash. The prior `\'` escape
+                       leaves a raw ' inside the literal and breaks the payload
+                       whenever an object name contains an apostrophe. #}
+                    {% set call_sql %}
+                        CALL OPS_CUR.UTIL_COMMON.GRANT_CROSS_DOMAIN_READ_ACCESS_BY_DOMAIN(
+                            '{{ domain_db }}',
+                            '{{ json_payload | replace("'", "''") }}')
+                    {% endset %}
+                    {% do run_query(call_sql) %}
+                {% endfor %}
+
+                {# Restore original session role #}
+                {% if grant_role %}
+                    {% do run_query('USE ROLE ' ~ original_role) %}
+                {% endif %}
+            {% endif %}
+        {% else %}
+            {% if not is_push_merge %}
+                {{ log(
+                    "[cross_domain_grants] SKIPPED | event: " ~ (github_event if github_event else 'unknown/local')
+                    ~ " | env: " ~ target.database
+                    ~ " | No cross domain models found targeting production databases."
+                    ~ " In PR/PD runs, all node.database values resolve to ephemeral databases"
+                    ~ " (_PR_*/_PD) and are excluded from grant processing by design.",
+                    info=true
+                ) }}
+            {% else %}
+                {{ log(
+                    "[cross_domain_grants] SKIPPED | No models with CROSS_DOMAIN=TRUE found in the dbt graph."
+                    ~ " Verify that cross domain models have snowflake_tags: {CROSS_DOMAIN: 'TRUE'} in their config.",
+                    info=true
+                ) }}
+            {% endif %}
+        {% endif %} {# cross_domain_by_db length check #}
+
+        {% else %}
+            {{ log(
+                "[cross_domain_grants] SKIPPED | role: '" ~ target.role
+                ~ "' is not a DEPLOY or ELT role — cross domain grant reconciliation only runs"
+                ~ " for deployment and Airflow pipeline roles to prevent analyst runs from"
+                ~ " triggering privilege changes.",
+                info=true
+            ) }}
+        {% endif %} {# DEPLOY / ELT role guard #}
+
     {% endif %}
 {% endmacro %}

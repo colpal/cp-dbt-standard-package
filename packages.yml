@@ -1,5 +1,5 @@
 packages:
   - package: dbt-labs/dbt_project_evaluator
-    version: 1.0.0
+    version: 1.0.0            # unchanged — evaluator upgrade (→1.2.4) is a separate ticket
   - package: get-select/dbt_query_tags
-    version: [">=3.0.0", "<4.0.0"]
+    version: 3.1.0            # pinned from [">=3.0.0", "<4.0.0"] — compatible with dbt <2.0.0

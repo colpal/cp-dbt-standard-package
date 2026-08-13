@@ -3,7 +3,7 @@
 # and underscores. A good package name should reflect your organization's
 # name or the intended use of these models
 name: 'cp_dbt_standard_package'
-version: '2.6.2'
+version: '2.7.0'
 config-version: 2
 
 # This setting configures which "profile" dbt uses for this project.
@@ -31,3 +31,5 @@ models:
 on-run-end:
   - "{% if 'SBX' not in target.database | upper and '_LAB_' not in target.database | upper %}{{ cp_dbt_standard_package.tag_models_from_results() }}{% endif %}"
   - "{% if 'SBX' not in target.database | upper and '_LAB_' not in target.database | upper %}{{ cp_dbt_standard_package.call_certified_read_proc() }}{% endif %}"
+  - "{% if 'SBX' not in target.database | upper and '_LAB_' not in target.database | upper %}{{ cp_dbt_standard_package.call_cross_domain_read_proc() }}{% endif %}"
+
