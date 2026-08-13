@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   update-pr-description:
-    runs-on: cp-ubuntu22.04-amd64-1core-1gb
+    runs-on: ubuntu-latest
     steps:
       - name: Install GitHub CLI
         run: |
