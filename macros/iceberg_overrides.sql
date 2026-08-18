@@ -26,11 +26,19 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
     {{ return(result) }}
 {%- endmacro -%}
 
+{#- Dispatch into dbt-core / dbt-snowflake only. A bare dbt.<macro>() call
+    re-enters this package via search_order; dbt.snowflake__<macro>() raises
+    "'dict object' has no attribute ..." when dbt-snowflake has no adapter
+    override (EX #982 native contract canary). -#}
+{%- macro cp_dispatch_dbt(macro_name) -%}
+    {{ return(adapter.dispatch(macro_name, 'dbt')) }}
+{%- endmacro -%}
+
 {% macro get_table_columns_and_constraints() %}
     {% if cp_dbt_standard_package.cp_is_iceberg() %}
         {{ return('') }}
     {% else %}
-        {{ return(dbt.get_table_columns_and_constraints()) }}
+        {{ return(cp_dbt_standard_package.cp_dispatch_dbt('get_table_columns_and_constraints')()) }}
     {% endif %}
 {% endmacro %}
 
@@ -46,7 +54,7 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
     {% if cp_dbt_standard_package.cp_is_iceberg() %}
         {{ return('') }}
     {% else %}
-        {{ return(dbt.snowflake__get_table_columns_and_constraints()) }}
+        {{ return(cp_dbt_standard_package.cp_dispatch_dbt('get_table_columns_and_constraints')()) }}
     {% endif %}
 {% endmacro %}
 
@@ -54,7 +62,7 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
     {% if cp_dbt_standard_package.cp_is_iceberg() %}
         {{ return('') }}
     {% else %}
-        {{ return(dbt.render_raw_columns_constraints(raw_columns)) }}
+        {{ return(cp_dbt_standard_package.cp_dispatch_dbt('render_raw_columns_constraints')(raw_columns)) }}
     {% endif %}
 {% endmacro %}
 
@@ -70,7 +78,7 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
     {% if cp_dbt_standard_package.cp_is_iceberg() %}
         {{ return('') }}
     {% else %}
-        {{ return(dbt.snowflake__render_raw_columns_constraints(raw_columns)) }}
+        {{ return(cp_dbt_standard_package.cp_dispatch_dbt('render_raw_columns_constraints')(raw_columns)) }}
     {% endif %}
 {% endmacro %}
 
@@ -281,7 +289,7 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
     {% if cp_dbt_standard_package.cp_is_iceberg() %}
         {{ return('') }}
     {% else %}
-        {{ return(dbt.get_assert_columns_equivalent(ddl_dict)) }}
+        {{ return(cp_dbt_standard_package.cp_dispatch_dbt('get_assert_columns_equivalent')(ddl_dict)) }}
     {% endif %}
 {% endmacro %}
 
@@ -297,7 +305,9 @@ PURPOSE:    Globally intercepts dbt's native Snowflake materialization macros to
     {% if cp_dbt_standard_package.cp_is_iceberg() %}
         {{ return('') }}
     {% else %}
-        {{ return(dbt.snowflake__get_assert_columns_equivalent(ddl_dict)) }}
+        {#- dbt-snowflake has no snowflake__get_assert_columns_equivalent;
+            calling dbt.snowflake__... raises "'dict object' has no attribute". -#}
+        {{ return(cp_dbt_standard_package.cp_dispatch_dbt('get_assert_columns_equivalent')(ddl_dict)) }}
     {% endif %}
 {% endmacro %}
 
