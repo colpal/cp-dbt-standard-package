@@ -63,7 +63,7 @@ ALTER Bypass: Prevents dbt from attempting to ALTER COLUMN TYPE on Iceberg table
 
 dbt's Python-level contract validation compares columns returned by the model against the YAML contract definition. Because Iceberg tables recast some types (e.g. `TIMESTAMP_TZ` → `TIMESTAMP_LTZ`), this comparison would always fail. These overrides return an empty string to silence the assertion entirely.
 
-On **native** tables they must call dbt-core's `default__` implementation via `adapter.dispatch(..., 'dbt')`. dbt-snowflake does not define `snowflake__get_assert_columns_equivalent`; `dbt.snowflake__get_assert_columns_equivalent()` raises `'dict object' has no attribute` (EX PR #982 / DPB-2686).
+On **native** tables they must call `adapter.dispatch('get_assert_columns_equivalent', 'dbt')` with a **string literal** name (dbt 1.9 `jinja_static` cannot parse a variable). dbt-snowflake does not define `snowflake__get_assert_columns_equivalent`.
 
 ---
 
