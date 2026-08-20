@@ -3,7 +3,7 @@
 # and underscores. A good package name should reflect your organization's
 # name or the intended use of these models
 name: 'cp_dbt_standard_package'
-version: '2.6.2'
+version: '2.7.0'
 config-version: 2
 
 # This setting configures which "profile" dbt uses for this project.
@@ -27,7 +27,32 @@ clean-targets:         # directories to be removed by `dbt clean`
 models:
   +transient: false
 
-# Automatically reapply Snowflake tags after every dbt run (fixes tag loss on view recreation)
+# Reapply Snowflake tags + reconcile CERTIFIED_READ / CROSS_DOMAIN_READ grants
+# after object-mutating dbt runs.
+#
+# DPB-2513: Gate on flags.WHICH so hooks fire ONLY for commands that create or
+# replace Snowflake objects (run, build, seed, snapshot, clone).
+#
+# Skipped commands (test, compile, parse, deps, list, docs, debug, show, clean,
+# init, source freshness, retry, run-operation, source ...) do not touch object
+# DDL — tag reapplication and grant reconciliation have nothing to reconcile.
+# This also:
+#   - unblocks per-domain read-only test roles (e.g. <DOMAIN>_TEST) which must
+#     not hold USAGE on OPS_CUR.UTIL_COMMON.GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN
+#     and would otherwise fail `dbt test` with 002141 "Unknown user-defined
+#     function".
+#   - prevents `dbt source freshness` (which runs on-run-end hooks by default
+#     as of dbt-core 1.10 — flag removed entirely in v2.0) from firing the
+#     grant procs on every source-freshness check.
+#
+# SBX / _LAB_ guard: sandbox and lab databases are analyst-owned; skip both
+# tagging and grant reconciliation there.
+#
+# Belt-and-suspenders: each macro also carries its own flags.WHICH guard in
+# apply_snowflake_tags.sql so any downstream project that wires these into
+# their own on-run-end without the yaml guard still gets correct behavior.
 on-run-end:
-  - "{% if 'SBX' not in target.database | upper and '_LAB_' not in target.database | upper %}{{ cp_dbt_standard_package.tag_models_from_results() }}{% endif %}"
-  - "{% if 'SBX' not in target.database | upper and '_LAB_' not in target.database | upper %}{{ cp_dbt_standard_package.call_certified_read_proc() }}{% endif %}"
+  - "{% if flags.WHICH in ['run','build','seed','snapshot','clone'] and 'SBX' not in target.database | upper and '_LAB_' not in target.database | upper %}{{ cp_dbt_standard_package.tag_models_from_results() }}{% endif %}"
+  - "{% if flags.WHICH in ['run','build','seed','snapshot','clone'] and 'SBX' not in target.database | upper and '_LAB_' not in target.database | upper %}{{ cp_dbt_standard_package.call_certified_read_proc() }}{% endif %}"
+  - "{% if flags.WHICH in ['run','build','seed','snapshot','clone'] and 'SBX' not in target.database | upper and '_LAB_' not in target.database | upper %}{{ cp_dbt_standard_package.call_cross_domain_read_proc() }}{% endif %}"
+
