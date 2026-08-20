@@ -19,6 +19,10 @@ permissions:
 
 jobs:
   update-pr-description:
+    # pull_request_target exposes Jira credentials to every PR on a public repo.
+    # Without this gate any fork could name a branch after an arbitrary issue key
+    # and have its contents published into a public PR body.
+    if: contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association)
     runs-on: ubuntu-latest
     steps:
       - name: Extract Jira Story Key from Branch Name
@@ -110,6 +114,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           JIRA_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_KEY: ${{ steps.extract.outputs.jira_key }}
         run: |
           AUTO_START="<!-- JIRA-AUTO-START -->"
           AUTO_END="<!-- JIRA-AUTO-END -->"
