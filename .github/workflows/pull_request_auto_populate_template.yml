@@ -31,15 +31,19 @@ jobs:
           # Fork-controlled input must flow through env, never inline ${{ }}.
           BRANCH_NAME: ${{ github.head_ref }}
         run: |
-          UPPER_BRANCH=$(printf '%s' "$BRANCH_NAME" | tr '[:lower:]' '[:upper:]' | sed 's/_/-/g')
-          STORY_KEY=$(printf '%s' "$UPPER_BRANCH" | grep -oE '[A-Z]{2,5}-[0-9]+' | head -n 1 || true)
+          UPPER_BRANCH=$(echo "$BRANCH_NAME" | tr '[:lower:]' '[:upper:]' | sed 's/_/-/g')
+          STORY_KEY=$(echo "$UPPER_BRANCH" | grep -oE '[A-Z]{2,5}-[0-9]+' | head -n 1)
           if [ -z "$STORY_KEY" ]; then
             echo "No Jira key found — skipping PR update"
           fi
+          # The old `exit 0` here ended only this step, so the fetch step still
+          # ran with an empty key and died on a hostless URL. Publish the result
+          # instead and let the later steps gate on it.
           echo "jira_key=$STORY_KEY" >> "$GITHUB_OUTPUT"
 
       - name: Fetch Jira Story Details
         id: jira
+        # No key extracted means there is nothing to fetch.
         if: steps.extract.outputs.jira_key != ''
         env:
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
@@ -63,7 +67,7 @@ jobs:
 
           SUMMARY=$(echo "$RESPONSE" | jq -r '.fields.summary')
 
-          # This query finds each paragraph, joins all text within it,
+          # This new query finds each paragraph, joins all text within it,
           # and then joins all paragraphs with a newline.
           DESCRIPTION=$(echo "$RESPONSE" | jq -r '
             .fields.description.content |
@@ -92,29 +96,26 @@ jobs:
             join("\n")
           ' 2>/dev/null || echo "No acceptance criteria")
 
-          # Heredoc-style multiline env vars; distinctive delimiter so Jira
-          # text containing "EOF" cannot terminate a value early.
+          # Under pull_request_target this job holds real secrets and a
+          # write-capable token, so Jira text must not be able to close a
+          # heredoc and forge its own $GITHUB_ENV entries. Any fixed delimiter
+          # is guessable by whoever can edit the issue; randomize per run.
+          DELIM="JIRA_EOF_$(openssl rand -hex 16)"
           {
-            echo "SUMMARY<<JIRA_ENV_EOF"
+            echo "SUMMARY<<$DELIM"
             echo "$SUMMARY"
-            echo "JIRA_ENV_EOF"
-            echo "DESCRIPTION<<JIRA_ENV_EOF"
+            echo "$DELIM"
+            echo "DESCRIPTION<<$DELIM"
             echo "$DESCRIPTION"
-            echo "JIRA_ENV_EOF"
-            echo "ACCEPTANCE_CRITERIA<<JIRA_ENV_EOF"
+            echo "$DELIM"
+            echo "ACCEPTANCE_CRITERIA<<$DELIM"
             echo "$ACCEPTANCE_CRITERIA"
-            echo "JIRA_ENV_EOF"
+            echo "$DELIM"
           } >> "$GITHUB_ENV"
 
       - name: Update Pull Request Description
         # Skipped when extraction found no key or the fetch step bailed out.
         if: env.SUMMARY != '' && env.SUMMARY != 'null'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          JIRA_URL: ${{ secrets.JIRA_BASE_URL }}
-          JIRA_KEY: ${{ steps.extract.outputs.jira_key }}
         run: |
           AUTO_START="<!-- JIRA-AUTO-START -->"
           AUTO_END="<!-- JIRA-AUTO-END -->"
@@ -189,3 +190,12 @@ jobs:
 
           # 5. Update PR safely
           gh pr edit "$PR_NUMBER" --body-file final_body.txt
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          # PR_NUMBER/JIRA_URL were inline ${{ }} in the run block; JIRA_KEY is
+          # new here because the extract step now publishes a step output rather
+          # than writing to $GITHUB_ENV, which no longer reaches this step.
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          JIRA_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_KEY: ${{ steps.extract.outputs.jira_key }}
