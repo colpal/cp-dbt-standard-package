@@ -2,7 +2,7 @@
   Snowflake Tagging Package (`dbt_snowflake_tagging`)
   ----------------------------------------------------
     A set of macros to apply centrally created Snowflake tags to dbt models and columns
-    based on configurations in schema YAML files.
+    based on configurations in schema YAML files
 
   Version: 1.0.0
 
@@ -314,7 +314,36 @@
    ============================================================ #}
 {% macro call_certified_read_proc() %}
     {% if execute %}
-        {{ log("Calling GRANT_CERTIFIED_READ_ACCESS procedure to apply certified read grants", info=true) }}
-        {% do run_query("CALL OPS_CUR.UTIL_COMMON.GRANT_CERTIFIED_READ_ACCESS()") %}
+        {% set certified_objects = cp_dbt_standard_package.get_certified_consumption_objects() %}
+        {% if certified_objects | length == 0 %}
+            {{ log("No certified consumption-layer objects in this run - skipping GRANT_CERTIFIED_READ_ACCESS.", info=true) }}
+        {% else %}
+            {{ log("Calling GRANT_CERTIFIED_READ_ACCESS for " ~ certified_objects | length ~ " certified consumption object(s)", info=true) }}
+            {% do run_query("CALL OPS_CUR.UTIL_COMMON.GRANT_CERTIFIED_READ_ACCESS()") %}
+        {% endif %}
     {% endif %}
+{% endmacro %}
+
+
+{% macro get_certified_consumption_objects() %}
+    {% set certified = [] %}
+    {% if execute %}
+        {% for res in results %}
+            {% set node = res.node %}
+            {% if node.resource_type == 'model' and res.status in ['success', 'pass'] %}
+                {% set db = node.database | default('', true) | upper %}
+                {# PD builds target {DOMAIN}_CON_PD; PR previews target _PR_{N}_{DOMAIN}_CON #}
+                {% set db_root = db[:-3] if db.endswith('_PD') else db %}
+                {% if db_root.endswith('_CON') %}
+                    {% set meta_tags = node.config.get('meta', {}).get('snowflake_tags', {}) %}
+                    {% set model_tags = node.config.get('snowflake_tags', {}) %}
+                    {% set tags = meta_tags if meta_tags else model_tags %}
+                    {% if (tags.get('IS_CERTIFIED', '') | string | trim | upper) == 'TRUE' %}
+                        {% do certified.append(node.unique_id) %}
+                    {% endif %}
+                {% endif %}
+            {% endif %}
+        {% endfor %}
+    {% endif %}
+    {{ return(certified) }}
 {% endmacro %}
