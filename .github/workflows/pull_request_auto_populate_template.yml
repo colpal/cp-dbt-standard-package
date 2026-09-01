@@ -1,7 +1,12 @@
 name: Jira PR Description
 
 on:
-  pull_request:
+  # pull_request_target runs in the BASE repo's context: Jira secrets are
+  # available and GITHUB_TOKEN is write-capable even for fork PRs (plain
+  # pull_request gets no secrets and a read-only token from forks).
+  # Safe here because the workflow never checks out or executes PR code —
+  # it only reads the branch name and edits the PR body via the GitHub API.
+  pull_request_target:
     types: [opened, reopened, synchronize]
 
 concurrency:
@@ -14,45 +19,51 @@ permissions:
 
 jobs:
   update-pr-description:
+    # pull_request_target exposes Jira credentials to every PR on a public repo.
+    # Without this gate any fork could name a branch after an arbitrary issue key
+    # and have its contents published into a public PR body.
+    if: contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association)
     runs-on: ubuntu-latest
     steps:
-      - name: Install GitHub CLI
-        run: |
-          # 1. Define version and detect architecture
-          GH_VER="2.82.1"
-          ARCH="$(dpkg --print-architecture)"
-          DEB_NAME="gh_${GH_VER}_linux_${ARCH}.deb"
-
-          # 2. Download using curl (since wget is missing)
-          # -L follows redirects, -O saves the file with its original name
-          curl -LO "https://github.com/cli/cli/releases/download/v${GH_VER}/${DEB_NAME}"
-
-          # 3. Install
-          sudo dpkg -i "${DEB_NAME}"
-
-          # 4. Cleanup
-          rm "${DEB_NAME}"
-
       - name: Extract Jira Story Key from Branch Name
         id: extract
+        env:
+          # Fork-controlled input must flow through env, never inline ${{ }}.
+          BRANCH_NAME: ${{ github.head_ref }}
         run: |
-          BRANCH_NAME="${{ github.head_ref }}"
           UPPER_BRANCH=$(echo "$BRANCH_NAME" | tr '[:lower:]' '[:upper:]' | sed 's/_/-/g')
           STORY_KEY=$(echo "$UPPER_BRANCH" | grep -oE '[A-Z]{2,5}-[0-9]+' | head -n 1)
           if [ -z "$STORY_KEY" ]; then
             echo "No Jira key found — skipping PR update"
-            exit 0
           fi
-          echo "JIRA_KEY=$STORY_KEY" >> $GITHUB_ENV
+          # The old `exit 0` here ended only this step, so the fetch step still
+          # ran with an empty key and died on a hostless URL. Publish the result
+          # instead and let the later steps gate on it.
+          echo "jira_key=$STORY_KEY" >> "$GITHUB_OUTPUT"
 
       - name: Fetch Jira Story Details
         id: jira
+        # No key extracted means there is nothing to fetch.
+        if: steps.extract.outputs.jira_key != ''
+        env:
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          JIRA_KEY: ${{ steps.extract.outputs.jira_key }}
         run: |
-          JIRA_API_URL="${{ secrets.JIRA_BASE_URL }}/rest/api/3/issue/${{ env.JIRA_KEY }}"
-          RESPONSE=$(curl -s -u "${{ secrets.JIRA_USER_EMAIL }}:${{ secrets.JIRA_API_TOKEN }}" \
-            -H "Accept: application/json" "$JIRA_API_URL")
+          # Fork PRs and contexts without secrets must skip cleanly instead of
+          # dying on curl exit 3 (hostless URL when JIRA_BASE_URL is empty).
+          if [ -z "$JIRA_BASE_URL" ] || [ -z "$JIRA_USER_EMAIL" ] || [ -z "$JIRA_API_TOKEN" ]; then
+            echo "::notice::Jira secrets unavailable in this context — skipping PR update"
+            exit 0
+          fi
 
-          # --- UPDATED JQ COMMANDS FOR CORRECT FORMATTING ---
+          if ! RESPONSE=$(curl -sSf -u "$JIRA_USER_EMAIL:$JIRA_API_TOKEN" \
+            -H "Accept: application/json" \
+            "$JIRA_BASE_URL/rest/api/3/issue/$JIRA_KEY"); then
+            echo "::warning::Jira fetch failed for $JIRA_KEY — skipping PR update"
+            exit 0
+          fi
 
           SUMMARY=$(echo "$RESPONSE" | jq -r '.fields.summary')
 
@@ -85,28 +96,29 @@ jobs:
             join("\n")
           ' 2>/dev/null || echo "No acceptance criteria")
 
-          # --- Use heredoc syntax to save multiline strings (this part is correct) ---
-
-          echo "SUMMARY<<EOF" >> $GITHUB_ENV
-          echo "$SUMMARY" >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
-
-          echo "DESCRIPTION<<EOF" >> $GITHUB_ENV
-          echo "$DESCRIPTION" >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
-
-          echo "ACCEPTANCE_CRITERIA<<EOF" >> $GITHUB_ENV
-          echo "$ACCEPTANCE_CRITERIA" >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
+          # Under pull_request_target this job holds real secrets and a
+          # write-capable token, so Jira text must not be able to close a
+          # heredoc and forge its own $GITHUB_ENV entries. Any fixed delimiter
+          # is guessable by whoever can edit the issue; randomize per run.
+          DELIM="JIRA_EOF_$(openssl rand -hex 16)"
+          {
+            echo "SUMMARY<<$DELIM"
+            echo "$SUMMARY"
+            echo "$DELIM"
+            echo "DESCRIPTION<<$DELIM"
+            echo "$DESCRIPTION"
+            echo "$DELIM"
+            echo "ACCEPTANCE_CRITERIA<<$DELIM"
+            echo "$ACCEPTANCE_CRITERIA"
+            echo "$DELIM"
+          } >> "$GITHUB_ENV"
 
       - name: Update Pull Request Description
+        # Skipped when extraction found no key or the fetch step bailed out.
+        if: env.SUMMARY != '' && env.SUMMARY != 'null'
         run: |
-          PR_NUMBER=${{ github.event.pull_request.number }}
-
           AUTO_START="<!-- JIRA-AUTO-START -->"
           AUTO_END="<!-- JIRA-AUTO-END -->"
-
-          JIRA_URL="${{ secrets.JIRA_BASE_URL }}"
 
           # 1. Get current PR body
           CURRENT_BODY=$(gh pr view "$PR_NUMBER" --json body --jq '.body // ""')
@@ -181,3 +193,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
+          # PR_NUMBER/JIRA_URL were inline ${{ }} in the run block; JIRA_KEY is
+          # new here because the extract step now publishes a step output rather
+          # than writing to $GITHUB_ENV, which no longer reaches this step.
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          JIRA_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_KEY: ${{ steps.extract.outputs.jira_key }}
