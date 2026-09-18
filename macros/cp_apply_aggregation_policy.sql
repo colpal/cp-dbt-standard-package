@@ -36,10 +36,10 @@
 
     EXECUTE IMMEDIATE $$
     BEGIN
-        EXECUTE IMMEDIATE 'ALTER ICEBERG TABLE IF EXISTS {{ relation }} SET AGGREGATION POLICY {{ policy_name }}{{ entity_key_clause }} FORCE';
+        EXECUTE IMMEDIATE 'ALTER ICEBERG TABLE IF EXISTS {{ relation }} SET AGGREGATION POLICY {{ policy_name }} {{ entity_key_clause }} FORCE';
     EXCEPTION
         WHEN OTHER THEN
-            EXECUTE IMMEDIATE 'ALTER TABLE IF EXISTS {{ relation }} SET AGGREGATION POLICY {{ policy_name }}{{ entity_key_clause }} FORCE';
+            EXECUTE IMMEDIATE 'ALTER TABLE IF EXISTS {{ relation }} SET AGGREGATION POLICY {{ policy_name }} {{ entity_key_clause }} FORCE';
     END;
     $$;
 {%- endmacro %}
