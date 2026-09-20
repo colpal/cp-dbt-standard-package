@@ -1,10 +1,19 @@
 {#
   Apply a Snowflake aggregation policy to a relation.
 
-  Dual-path DDL for regular vs Iceberg tables during Iceberg rollout:
-  tries ALTER ICEBERG TABLE IF EXISTS first, then on exception falls back
-  to ALTER TABLE IF EXISTS. Callers do not need to know the table type
-  (no cp_is_iceberg / iceberg_overrides dependency).
+  Dual-path DDL for regular vs Iceberg tables:
+    - Tries ALTER ICEBERG TABLE first (required for externally-managed Iceberg).
+    - Falls back to ALTER TABLE (works for regular tables and Snowflake-managed
+      Iceberg tables).
+
+  Both ALTER statements are wrapped in nested EXECUTE IMMEDIATE strings so
+  that syntax validation is deferred to runtime. Snowflake Scripting compiles
+  all statements in a BEGIN/END block before executing — bare ALTER ICEBERG
+  TABLE causes a compile-time error that EXCEPTION WHEN OTHER cannot catch.
+  String-based dynamic SQL avoids this.
+
+  IF EXISTS guards against missing relations; FORCE replaces any previously
+  assigned aggregation policy.
 
   Args:
       relation: Target table (dbt Relation or identifier).
@@ -27,14 +36,10 @@
 
     EXECUTE IMMEDIATE $$
     BEGIN
-        ALTER ICEBERG TABLE IF EXISTS {{ relation }}
-            SET AGGREGATION POLICY {{ policy_name }}{{ entity_key_clause }} FORCE;
-        RETURN 'SUCCESS: applied aggregation policy {{ policy_name }} to ICEBERG table {{ relation }}';
+        EXECUTE IMMEDIATE 'ALTER ICEBERG TABLE IF EXISTS {{ relation }} SET AGGREGATION POLICY {{ policy_name }} {{ entity_key_clause }} FORCE';
     EXCEPTION
         WHEN OTHER THEN
-            ALTER TABLE IF EXISTS {{ relation }}
-                SET AGGREGATION POLICY {{ policy_name }}{{ entity_key_clause }} FORCE;
-            RETURN 'SUCCESS: applied aggregation policy {{ policy_name }} to regular table {{ relation }} (fallback)';
+            EXECUTE IMMEDIATE 'ALTER TABLE IF EXISTS {{ relation }} SET AGGREGATION POLICY {{ policy_name }} {{ entity_key_clause }} FORCE';
     END;
     $$;
 {%- endmacro %}

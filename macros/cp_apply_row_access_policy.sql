@@ -18,18 +18,31 @@
         {% set results_policy_list = [] %}
     {% endif %}
 
+    {#- Use the shared cp_is_iceberg() helper (defined in iceberg_overrides.sql)
+        so RAP application uses the exact same Iceberg detection rule as the
+        materialization / tagging / contract-bypass paths. The prior local
+        `catalog_name`-only check missed models flagged with
+        `table_format='iceberg'` and could emit `ALTER TABLE` on an Iceberg
+        relation (Snowflake requires `ALTER ICEBERG TABLE`). -#}
+    {%- set is_iceberg = cp_dbt_standard_package.cp_is_iceberg() -%}
+    {#- Both ALTER variants get IF EXISTS so the macro is idempotent when the
+        RAP is applied on-run-end but the target relation has not yet been
+        materialized (e.g. a first-time PR build where the RAP macro compiles
+        before the referenced downstream table is created). -#}
+    {%- set alter_cmd = 'ALTER ICEBERG TABLE IF EXISTS' if is_iceberg else 'ALTER TABLE IF EXISTS' -%}
+
     {% if not results_policy_list %}
-        ALTER TABLE IF EXISTS {{ table_name }} 
-            ADD ROW ACCESS POLICY {{ policy_name }} 
+        {{ alter_cmd }} {{ table_name }}
+            ADD ROW ACCESS POLICY {{ policy_name }}
             ON {{ policy_col_list }};
     {% else %}
         {% set full_result_name = results_db_list[0] ~ '.' ~ results_schema_list[0] ~ '.' ~ results_policy_list[0] %}
         {% if not full_result_name == policy_name %}
-            ALTER TABLE IF EXISTS {{ table_name }}
+            {{ alter_cmd }} {{ table_name }}
                 DROP ROW ACCESS POLICY {{ full_result_name }};
-            ALTER TABLE IF EXISTS {{ table_name }} 
-                ADD ROW ACCESS POLICY {{ policy_name }} 
+            {{ alter_cmd }} {{ table_name }}
+                ADD ROW ACCESS POLICY {{ policy_name }}
                 ON {{ policy_col_list }};
         {% endif %}
-    {% endif %} 
+    {% endif %}
 {% endmacro %}
