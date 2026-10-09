@@ -484,6 +484,13 @@
         IS_CERTIFIED tag and therefore CERTIFIED_READ grants.
         Restricting to `model` alone incorrectly skipped the CALL on
         `dbt seed` / `dbt snapshot` runs (DPB-2513 8f04fbf).
+
+     3. DPB-2838 certified-consumption gate: skip when this run did not
+        successfully build any consumption-layer model tagged
+        IS_CERTIFIED=TRUE. CUR-only / uncertified CON builds cannot have
+        wiped CERTIFIED_READ grants, so the BY_DOMAIN CALL would be
+        wasted. Safe because TAG_BASED_RBAC_CERT_PROC still runs the
+        account-wide reconciler on a schedule.
    ============================================================ #}
 {% macro call_certified_read_proc() %}
     {% if execute %}
@@ -522,7 +529,23 @@
             {{ return('') }}
         {% endif %}
 
-        {# ---------------------f-----------------------------------
+        {# DPB-2838: only reconcile when this run rebuilt certified CON objects #}
+        {% set certified_objects = cp_dbt_standard_package.get_certified_consumption_objects() %}
+        {% if certified_objects | length == 0 %}
+            {{ log(
+                "[call_certified_read_proc] SKIPPED | no certified consumption-layer "
+                ~ "objects in this run — skipping GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN.",
+                info=true
+            ) }}
+            {{ return('') }}
+        {% endif %}
+        {{ log(
+            "[call_certified_read_proc] " ~ certified_objects | length
+            ~ " certified consumption object(s) in this run — continuing grant reconciliation.",
+            info=true
+        ) }}
+
+        {# --------------------------------------------------------
            Role guard: fire for DEPLOY roles (CI/CD) and ELT roles (Airflow).
            Both can rebuild models (DROP + CREATE) which wipes all Snowflake
            object-level grants including CROSS_DOMAIN_READ.SELECT. The proc must
@@ -727,6 +750,42 @@
         {% endif %} {# DEPLOY / ELT role guard #}
 
     {% endif %}
+{% endmacro %}
+
+
+{# ============================================================
+   GET CERTIFIED CONSUMPTION OBJECTS (DPB-2838)
+
+   Scans this run's `results` for successful models whose database is
+   consumption-layer (_CON / _CON_PD / _PR_*_*_CON) and tagged
+   IS_CERTIFIED=TRUE. Used by call_certified_read_proc to skip the
+   BY_DOMAIN grant reconciler when this run could not have wiped
+   CERTIFIED_READ grants.
+
+   Tag resolution matches call_certified_read_proc: config.snowflake_tags
+   first, then config.meta.snowflake_tags.
+   ============================================================ #}
+{% macro get_certified_consumption_objects() %}
+    {% set certified = [] %}
+    {% if execute %}
+        {% for res in results %}
+            {% set node = res.node %}
+            {% if node.resource_type == 'model' and res.status in ['success', 'pass'] %}
+                {% set db = node.database | default('', true) | upper %}
+                {# PD builds target {DOMAIN}_CON_PD; PR previews target _PR_{N}_{DOMAIN}_CON #}
+                {% set db_root = db[:-3] if db.endswith('_PD') else db %}
+                {% if db_root.endswith('_CON') %}
+                    {% set model_tags = node.config.get('snowflake_tags', {}) %}
+                    {% set meta_tags = node.config.get('meta', {}).get('snowflake_tags', {}) %}
+                    {% if (model_tags.get('IS_CERTIFIED', '') | string | trim | upper) == 'TRUE'
+                      or (meta_tags.get('IS_CERTIFIED', '') | string | trim | upper) == 'TRUE' %}
+                        {% do certified.append(node.unique_id) %}
+                    {% endif %}
+                {% endif %}
+            {% endif %}
+        {% endfor %}
+    {% endif %}
+    {{ return(certified) }}
 {% endmacro %}
 
 {# ============================================================
