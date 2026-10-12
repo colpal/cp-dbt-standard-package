@@ -48,18 +48,9 @@ models:
 # SBX / _LAB_ guard: sandbox and lab databases are analyst-owned; skip both
 # tagging and grant reconciliation there.
 #
-# Grant hooks (certified / cross-domain) add not-entered gates so the macros
-# are never invoked when they cannot safely CALL:
-#   - ephemeral target DBs (_PR_* / *_PD) — do not grant on prod from CI previews
-#   - role must contain DEPLOY or ELT (CI deploy + Airflow); analysts excluded
-#   - this-run relevance (DPB-2838): at least one successful certified _CON
-#     model (certified hook) or CROSS_DOMAIN model (cross-domain hook)
-# Tagging stays on the lighter guard so PR/PD retags still run.
-#
-# Belt-and-suspenders: each macro also carries its own guards in
-# apply_snowflake_tags.sql (with SKIPPED | reason=... logs) so any downstream
-# project that wires these into their own on-run-end without the yaml guard
-# still gets correct behavior.
+# Grant hooks also skip: _PR_* / *_PD, non-DEPLOY/ELT roles, and runs that
+# didn't rebuild a relevant CON model (DPB-2838). Tagging keeps the lighter
+# guard so PR/PD still retag. Macros repeat these checks if called directly.
 on-run-end:
   - "{% if flags.WHICH in ['run','build','seed','snapshot','clone'] and 'SBX' not in target.database | upper and '_LAB_' not in target.database | upper %}{{ cp_dbt_standard_package.tag_models_from_results() }}{% endif %}"
   - "{% if flags.WHICH in ['run','build','seed','snapshot','clone'] and 'SBX' not in target.database | upper and '_LAB_' not in target.database | upper and '_PR_' not in target.database | upper and not (target.database | upper).endswith('_PD') and ('DEPLOY' in target.role | upper or 'ELT' in target.role | upper) and cp_dbt_standard_package.get_certified_consumption_objects() | length > 0 %}{{ cp_dbt_standard_package.call_certified_read_proc() }}{% endif %}"
