@@ -449,18 +449,37 @@
    once per domain database. Identical behavior in Snowflake DEV and
    PROD (both use real *_CUR / *_CON targets).
 
+   No dry-run path — CALL or return. GITHUB_EVENT is not consulted;
+   ephemeral safety is the target DB (_PR_* / *_PD), not CI event type.
+
    Primary not-entered gates live in dbt_project.yml (command, SBX/LAB,
    ephemeral _PR_/_PD, DEPLOY|ELT role, DPB-2838 this-run certified CON).
-   Guards below are silent belt-and-suspenders for projects that wire
-   this macro without the yaml gates. No dry-run path — CALL or return.
+   Guards below are belt-and-suspenders for projects that wire this macro
+   without the yaml gates; each skip logs SKIPPED | reason=... for ops.
+
+   Guard order:
+     1. Command — only object-mutating cmds can wipe grants
+     2. Grantable results — ignore metadata-only packages (dbt_project_evaluator)
+     3. Ephemeral target DB — never CALL from _PR_* / *_PD
+     4. Role — DEPLOY (CI) or ELT (Airflow); analysts excluded
+     5. DPB-2838 — this run rebuilt ≥1 certified CON model
+     6. Full-graph manifest — siblings included for BY_DOMAIN reconcile
+        (this-run gate decides WHETHER to CALL; graph decides WHAT to send)
 
    ELT safety: execute_as = OWNER on the proc; ELT only needs EXECUTE.
+   get_tagging_role only rewrites *_DEPLOY_CUR ↔ *_DEPLOY_CON; ELT roles
+   are left unchanged for the CALL.
    ============================================================ #}
 {% macro call_certified_read_proc() %}
     {% if execute %}
 
         {% set object_mutating_cmds = ['run', 'build', 'seed', 'snapshot', 'clone'] %}
         {% if flags.WHICH not in object_mutating_cmds %}
+            {{ log(
+                "[certified_read_grants] SKIPPED | reason=command | which=" ~ flags.WHICH
+                ~ " | Hook only fires for: " ~ object_mutating_cmds | join(', '),
+                info=true
+            ) }}
             {{ return('') }}
         {% endif %}
 
@@ -475,27 +494,50 @@
             {% endif %}
         {% endfor %}
         {% if grantable_nodes | length == 0 %}
+            {{ log(
+                "[certified_read_grants] SKIPPED | reason=no_grantable_results"
+                ~ " | types=" ~ grantable_resource_types | join('/')
+                ~ " | ignoring packages: " ~ ignore_packages | join(', '),
+                info=true
+            ) }}
             {{ return('') }}
         {% endif %}
 
         {% set db_upper = target.database | upper %}
         {% if '_PR_' in db_upper or db_upper.endswith('_PD') %}
+            {{ log(
+                "[certified_read_grants] SKIPPED | reason=ephemeral_db | db=" ~ target.database
+                ~ " | Grants are not issued from _PR_* / *_PD targets.",
+                info=true
+            ) }}
             {{ return('') }}
         {% endif %}
 
         {% set role_upper = target.role | upper %}
         {% if 'DEPLOY' not in role_upper and 'ELT' not in role_upper %}
+            {{ log(
+                "[certified_read_grants] SKIPPED | reason=role | role=" ~ target.role
+                ~ " | Requires DEPLOY (CI) or ELT (Airflow).",
+                info=true
+            ) }}
             {{ return('') }}
         {% endif %}
 
         {# DPB-2838: this run must have rebuilt certified CON objects #}
         {% if cp_dbt_standard_package.get_certified_consumption_objects() | length == 0 %}
+            {{ log(
+                "[certified_read_grants] SKIPPED | reason=no_certified_con_this_run"
+                ~ " | env=" ~ target.database
+                ~ " | No successful IS_CERTIFIED consumption-layer models in results.",
+                info=true
+            ) }}
             {{ return('') }}
         {% endif %}
 
         {# Walk full graph: complete certified set (not just this-run results)
            so BY_DOMAIN reconciliation stays correct for siblings. #}
         {% set certified_read_by_db = {} %}
+        {% set skipped_ephemeral = [] %}
         {% for node_id, node in graph.nodes.items() %}
             {% if node.resource_type == 'model' %}
                 {% set model_tags  = node.config.get('snowflake_tags', {}) %}
@@ -508,8 +550,16 @@
                 {% endif %}
                 {% if certified_read %}
                     {% set mat = node.config.materialized %}
-                    {% if mat != 'ephemeral' %}
+                    {# Ephemeral models have no physical relation; sending them
+                       to the proc fails with 002003 on GRANT SELECT. #}
+                    {% if mat == 'ephemeral' %}
+                        {% do skipped_ephemeral.append(node.name) %}
+                    {% else %}
                         {% set db = node.database | upper %}
+                        {# Normalize ephemeral env names back to prod DB:
+                             _PR_{N}_{DOMAIN}_{LAYER} -> parts[3:] = DOMAIN_LAYER
+                             {DOMAIN}_{LAYER}_PD      -> strip trailing _PD
+                             {DOMAIN}_{LAYER}         -> unchanged #}
                         {% if db.startswith('_PR_') %}
                             {% set parts = db.split('_') %}
                             {% set db = parts[3:] | join('_') %}
@@ -530,10 +580,25 @@
             {% endif %}
         {% endfor %}
 
+        {% if skipped_ephemeral | length > 0 %}
+            {{ log(
+                "[certified_read_grants] SKIPPED " ~ skipped_ephemeral | length
+                ~ " ephemeral IS_CERTIFIED model(s): " ~ skipped_ephemeral | join(', ')
+                ~ " — no physical relation; omitted from grant manifest.",
+                info=true
+            ) }}
+        {% endif %}
+
         {% if certified_read_by_db | length == 0 %}
+            {{ log(
+                "[certified_read_grants] SKIPPED | reason=empty_manifest"
+                ~ " | No non-ephemeral IS_CERTIFIED models found in the dbt graph.",
+                info=true
+            ) }}
             {{ return('') }}
         {% endif %}
 
+        {# Role switch for DEPLOY CUR/CON mismatch only; ELT is unchanged. #}
         {% set original_role = target.role | upper %}
         {% set grant_role = cp_dbt_standard_package.get_tagging_role(target.database) %}
         {% if grant_role %}
@@ -554,6 +619,7 @@
                 ~ " | role: " ~ (grant_role if grant_role else original_role),
                 info=true
             ) }}
+            {# Snowflake string escape is doubled apostrophe (''), not \'. #}
             {% set call_sql %}
                 CALL OPS_CUR.UTIL_COMMON.GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN(
                     '{{ domain_db }}',
@@ -639,12 +705,18 @@
 
    Same CALL-or-return semantics as call_certified_read_proc
    (no dry-run; DEV and PROD identical on real DBs).
+   Skip paths log SKIPPED | reason=... for ops greppability.
    ============================================================ #}
 {% macro call_cross_domain_read_proc() %}
     {% if execute %}
 
         {% set object_mutating_cmds = ['run', 'build', 'seed', 'snapshot', 'clone'] %}
         {% if flags.WHICH not in object_mutating_cmds %}
+            {{ log(
+                "[cross_domain_grants] SKIPPED | reason=command | which=" ~ flags.WHICH
+                ~ " | Hook only fires for: " ~ object_mutating_cmds | join(', '),
+                info=true
+            ) }}
             {{ return('') }}
         {% endif %}
 
@@ -659,24 +731,47 @@
             {% endif %}
         {% endfor %}
         {% if grantable_nodes | length == 0 %}
+            {{ log(
+                "[cross_domain_grants] SKIPPED | reason=no_grantable_results"
+                ~ " | types=" ~ grantable_resource_types | join('/')
+                ~ " | ignoring packages: " ~ ignore_packages | join(', '),
+                info=true
+            ) }}
             {{ return('') }}
         {% endif %}
 
         {% set db_upper = target.database | upper %}
         {% if '_PR_' in db_upper or db_upper.endswith('_PD') %}
+            {{ log(
+                "[cross_domain_grants] SKIPPED | reason=ephemeral_db | db=" ~ target.database
+                ~ " | Grants are not issued from _PR_* / *_PD targets.",
+                info=true
+            ) }}
             {{ return('') }}
         {% endif %}
 
         {% set role_upper = target.role | upper %}
         {% if 'DEPLOY' not in role_upper and 'ELT' not in role_upper %}
+            {{ log(
+                "[cross_domain_grants] SKIPPED | reason=role | role=" ~ target.role
+                ~ " | Requires DEPLOY (CI) or ELT (Airflow).",
+                info=true
+            ) }}
             {{ return('') }}
         {% endif %}
 
         {% if cp_dbt_standard_package.get_cross_domain_objects_this_run() | length == 0 %}
+            {{ log(
+                "[cross_domain_grants] SKIPPED | reason=no_cross_domain_con_this_run"
+                ~ " | env=" ~ target.database
+                ~ " | No successful CROSS_DOMAIN consumption-layer models in results.",
+                info=true
+            ) }}
             {{ return('') }}
         {% endif %}
 
         {% set cross_domain_by_db = {} %}
+        {% set skipped_ephemeral = [] %}
         {% for node_id, node in graph.nodes.items() %}
             {% if node.resource_type == 'model' %}
                 {% set model_tags  = node.config.get('snowflake_tags', {}) %}
@@ -689,8 +784,16 @@
                 {% endif %}
                 {% if cross_domain %}
                     {% set mat = node.config.materialized %}
-                    {% if mat != 'ephemeral' %}
+                    {# Ephemeral models have no physical relation; sending them
+                       to the proc fails with 002003 on GRANT SELECT. #}
+                    {% if mat == 'ephemeral' %}
+                        {% do skipped_ephemeral.append(node.name) %}
+                    {% else %}
                         {% set db = node.database | upper %}
+                        {# Normalize ephemeral env names back to prod DB:
+                             _PR_{N}_{DOMAIN}_{LAYER} -> parts[3:] = DOMAIN_LAYER
+                             {DOMAIN}_{LAYER}_PD      -> strip trailing _PD
+                             {DOMAIN}_{LAYER}         -> unchanged #}
                         {% if db.startswith('_PR_') %}
                             {% set parts = db.split('_') %}
                             {% set db = parts[3:] | join('_') %}
@@ -711,10 +814,25 @@
             {% endif %}
         {% endfor %}
 
+        {% if skipped_ephemeral | length > 0 %}
+            {{ log(
+                "[cross_domain_grants] SKIPPED " ~ skipped_ephemeral | length
+                ~ " ephemeral CROSS_DOMAIN model(s): " ~ skipped_ephemeral | join(', ')
+                ~ " — no physical relation; omitted from grant manifest.",
+                info=true
+            ) }}
+        {% endif %}
+
         {% if cross_domain_by_db | length == 0 %}
+            {{ log(
+                "[cross_domain_grants] SKIPPED | reason=empty_manifest"
+                ~ " | No non-ephemeral CROSS_DOMAIN models found in the dbt graph.",
+                info=true
+            ) }}
             {{ return('') }}
         {% endif %}
 
+        {# Role switch for DEPLOY CUR/CON mismatch only; ELT is unchanged. #}
         {% set original_role = target.role | upper %}
         {% set grant_role = cp_dbt_standard_package.get_tagging_role(target.database) %}
         {% if grant_role %}
@@ -735,6 +853,7 @@
                 ~ " | role: " ~ (grant_role if grant_role else original_role),
                 info=true
             ) }}
+            {# Snowflake string escape is doubled apostrophe (''), not \'. #}
             {% set call_sql %}
                 CALL OPS_CUR.UTIL_COMMON.GRANT_CROSS_DOMAIN_READ_ACCESS_BY_DOMAIN(
                     '{{ domain_db }}',
