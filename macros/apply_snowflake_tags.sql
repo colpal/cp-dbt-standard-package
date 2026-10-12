@@ -441,19 +441,26 @@
 {# ============================================================
    CALL CERTIFIED READ PROCEDURE (on-run-end)
 
-   After a rebuild, CALL GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN with a
-   JSON list of IS_CERTIFIED models (one CALL per domain DB). Hourly
-   GRANT_CERTIFIED_READ_ACCESS is still the safety net.
+   Zero-latency alternative to the hourly GRANT_CERTIFIED_READ_ACCESS /
+   TAG_BASED_RBAC_CERT_PROC task. Walks the dbt graph, builds a JSON
+   manifest of IS_CERTIFIED objects, and CALLs
+   GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN once per domain database.
 
    Twin of call_cross_domain_read_proc (same flow; different tag/proc).
-   We keep both while teams move from CERTIFIED_READ → CROSS_DOMAIN.
+   Keep both while teams move from CERTIFIED_READ → CROSS_DOMAIN.
 
-   What changed (DPSA-620): we deleted the old Step 2 dry-run that keyed
-   off GITHUB_EVENT_NAME (push/merge = CALL, else log-only). That treated
-   Airflow as a "PR" (no GitHub event) and never CALLed — so morning ELT
-   wiped grants and left CERTIFIED_READ broken until the hourly task.
-   Real Snowflake DEV/PROD use {DOMAIN}_CUR/_CON (see DPI AGENTS.md);
-   only CI _PR_* / *_PD are ephemeral. So: skip those DBs, otherwise CALL.
+   DPSA-620: removed the old GITHUB_EVENT dry-run (push/merge = CALL,
+   else log-only). Airflow has no GitHub event, so ELT never CALLed and
+   morning rebuilds left CERTIFIED_READ broken until the hourly task.
+   Snowflake DEV and PROD both use real {DOMAIN}_CUR / {DOMAIN}_CON
+   (DPI AGENTS.md). Only CI _PR_* / *_PD are ephemeral — skip those,
+   otherwise CALL. No dry-run path.
+
+   Primary gates live in dbt_project.yml; guards below cover projects
+   that wire this macro without those yaml checks.
+
+   ELT: proc is EXECUTE AS OWNER, so ELT only needs EXECUTE.
+   get_tagging_role only flips *_DEPLOY_CUR ↔ *_DEPLOY_CON; ELT unchanged.
    ============================================================ #}
 {% macro call_certified_read_proc() %}
     {% if execute %}
@@ -497,6 +504,7 @@
             {{ return('') }}
         {% endif %}
 
+        {# DEPLOY (CI) and ELT (Airflow) both rebuild models and wipe grants #}
         {% set role_upper = target.role | upper %}
         {% if 'DEPLOY' not in role_upper and 'ELT' not in role_upper %}
             {{ log(
@@ -507,7 +515,8 @@
             {{ return('') }}
         {% endif %}
 
-        {# DPB-2838: only bother if this run rebuilt certified CON models #}
+        {# DPB-2838: only CALL if this run rebuilt certified CON models.
+           WHETHER to CALL is this-run; WHAT to send is the full graph below. #}
         {% if cp_dbt_standard_package.get_certified_consumption_objects() | length == 0 %}
             {{ log(
                 "[certified_read_grants] SKIPPED | no certified CON models rebuilt this run",
@@ -516,7 +525,12 @@
             {{ return('') }}
         {% endif %}
 
-        {# Full graph so sibling certified models stay in the reconcile set #}
+        {# --------------------------------------------------------
+           Step 1: walk the full graph for every IS_CERTIFIED model,
+           grouped by resolved target database. Include siblings not
+           rebuilt this run so BY_DOMAIN reconcile stays complete.
+           Resolve tags from config.snowflake_tags or meta.snowflake_tags.
+           -------------------------------------------------------- #}
         {% set certified_read_by_db = {} %}
         {% set skipped_ephemeral = [] %}
         {% for node_id, node in graph.nodes.items() %}
@@ -531,12 +545,19 @@
                 {% endif %}
                 {% if certified_read %}
                     {% set mat = node.config.materialized %}
-                    {# ephemeral = no table to grant on #}
+                    {# Ephemeral models produce no physical relation. Sending
+                       them into the by-domain proc fails with 002003 on
+                       GRANT SELECT. Collect names for a roll-up log below. #}
                     {% if mat == 'ephemeral' %}
                         {% do skipped_ephemeral.append(node.name) %}
                     {% else %}
                         {% set db = node.database | upper %}
-                        {# _PR_67_FIN_CON -> FIN_CON; FIN_CON_PD -> FIN_CON #}
+                        {# Normalize ephemeral env suffixes back to prod DB.
+                           Split from the LEFT — db.split('_PR_')[0] yields ''
+                           for names like _PR_67_FIN_CON (they start with _PR_).
+                             _PR_{N}_{DOMAIN}_{LAYER} -> parts[3:] = DOMAIN_LAYER
+                             {DOMAIN}_{LAYER}_PD      -> strip trailing _PD
+                             {DOMAIN}_{LAYER}         -> unchanged #}
                         {% if db.startswith('_PR_') %}
                             {% set parts = db.split('_') %}
                             {% set db = parts[3:] | join('_') %}
@@ -560,7 +581,8 @@
         {% if skipped_ephemeral | length > 0 %}
             {{ log(
                 "[certified_read_grants] skipped " ~ skipped_ephemeral | length
-                ~ " ephemeral IS_CERTIFIED model(s): " ~ skipped_ephemeral | join(', '),
+                ~ " ephemeral IS_CERTIFIED model(s): " ~ skipped_ephemeral | join(', ')
+                ~ " — no physical relation; omitted from grant manifest.",
                 info=true
             ) }}
         {% endif %}
@@ -573,6 +595,16 @@
             {{ return('') }}
         {% endif %}
 
+        {# --------------------------------------------------------
+           Step 2: CALL GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN once per
+           domain with the scoped JSON manifest.
+
+           Role switch: grant proc should run as {domain}_DEPLOY_CON when
+           the session is DEPLOY_CUR (and the reverse). Switch once for
+           the loop and always restore afterwards. get_tagging_role uses
+           target.database to infer CUR vs CON. ELT roles are left as-is
+           (proc runs EXECUTE AS OWNER).
+           -------------------------------------------------------- #}
         {% set original_role = target.role | upper %}
         {% set grant_role = cp_dbt_standard_package.get_tagging_role(target.database) %}
         {% if grant_role %}
@@ -593,7 +625,9 @@
                 ~ " | role: " ~ (grant_role if grant_role else original_role),
                 info=true
             ) }}
-            {# Snowflake wants '' not \' inside string literals #}
+            {# Snowflake single-quoted string escape is a doubled apostrophe
+               (''), not a backslash. A prior `\'` escape left a raw ' inside
+               the literal and broke payloads with apostrophes in names. #}
             {% set call_sql %}
                 CALL OPS_CUR.UTIL_COMMON.GRANT_CERTIFIED_READ_ACCESS_BY_DOMAIN(
                     '{{ domain_db }}',
@@ -612,8 +646,10 @@
 {# ============================================================
    GET CERTIFIED CONSUMPTION OBJECTS (DPB-2838)
 
-   Successful IS_CERTIFIED CON models from this run (results).
-   Used by yaml gates and call_certified_read_proc.
+   Successful models from this run's results that are consumption-layer
+   (_CON / _CON_PD / _PR_*_*_CON) and tagged IS_CERTIFIED=TRUE.
+   Used by dbt_project.yml not-entered gates and by call_certified_read_proc.
+   Tags: config.snowflake_tags, then config.meta.snowflake_tags.
    ============================================================ #}
 {% macro get_certified_consumption_objects() %}
     {% set certified = [] %}
@@ -641,7 +677,8 @@
 {# ============================================================
    GET CROSS DOMAIN OBJECTS THIS RUN (DPB-2838)
 
-   Same as get_certified_consumption_objects, but CROSS_DOMAIN=TRUE.
+   Same shape as get_certified_consumption_objects, but for
+   CROSS_DOMAIN=TRUE on successful consumption-layer models.
    ============================================================ #}
 {% macro get_cross_domain_objects_this_run() %}
     {% set cross_domain_objs = [] %}
@@ -669,10 +706,13 @@
 {# ============================================================
    CALL CROSS_DOMAIN READ PROCEDURE (on-run-end)
 
-   Same flow as call_certified_read_proc: rebuild → CALL
-   GRANT_CROSS_DOMAIN_READ_ACCESS_BY_DOMAIN per domain. Same DPSA-620
-   fix (no GITHUB_EVENT dry-run; skip _PR_* / *_PD only). Keep in
-   lockstep with the certified macro while both grant paths exist.
+   Zero-latency alternative to the hourly GRANT_CROSS_DOMAIN_READ_ACCESS /
+   TAG_BASED_RBAC_CROSS_DOMAIN_PROC task. Same flow as
+   call_certified_read_proc: graph walk → CALL
+   GRANT_CROSS_DOMAIN_READ_ACCESS_BY_DOMAIN once per domain.
+
+   Keep in lockstep with the certified macro (DPSA-620: no GITHUB_EVENT
+   dry-run; skip _PR_* / *_PD; otherwise CALL on real DEV/PROD DBs).
    ============================================================ #}
 {% macro call_cross_domain_read_proc() %}
     {% if execute %}
@@ -716,6 +756,7 @@
             {{ return('') }}
         {% endif %}
 
+        {# DEPLOY (CI) and ELT (Airflow) both rebuild models and wipe grants #}
         {% set role_upper = target.role | upper %}
         {% if 'DEPLOY' not in role_upper and 'ELT' not in role_upper %}
             {{ log(
@@ -726,6 +767,7 @@
             {{ return('') }}
         {% endif %}
 
+        {# DPB-2838: WHETHER to CALL is this-run; WHAT to send is full graph #}
         {% if cp_dbt_standard_package.get_cross_domain_objects_this_run() | length == 0 %}
             {{ log(
                 "[cross_domain_grants] SKIPPED | no CROSS_DOMAIN CON models rebuilt this run",
@@ -734,6 +776,10 @@
             {{ return('') }}
         {% endif %}
 
+        {# --------------------------------------------------------
+           Step 1: walk the full graph for every CROSS_DOMAIN model,
+           grouped by resolved target database (siblings included).
+           -------------------------------------------------------- #}
         {% set cross_domain_by_db = {} %}
         {% set skipped_ephemeral = [] %}
         {% for node_id, node in graph.nodes.items() %}
@@ -748,12 +794,19 @@
                 {% endif %}
                 {% if cross_domain %}
                     {% set mat = node.config.materialized %}
-                    {# ephemeral = no table to grant on #}
+                    {# Ephemeral models produce no physical relation. Sending
+                       them into the by-domain proc fails with 002003 on
+                       GRANT SELECT. Collect names for a roll-up log below. #}
                     {% if mat == 'ephemeral' %}
                         {% do skipped_ephemeral.append(node.name) %}
                     {% else %}
                         {% set db = node.database | upper %}
-                        {# _PR_67_FIN_CON -> FIN_CON; FIN_CON_PD -> FIN_CON #}
+                        {# Normalize ephemeral env suffixes back to prod DB.
+                           Split from the LEFT — db.split('_PR_')[0] yields ''
+                           for names like _PR_67_FIN_CON (they start with _PR_).
+                             _PR_{N}_{DOMAIN}_{LAYER} -> parts[3:] = DOMAIN_LAYER
+                             {DOMAIN}_{LAYER}_PD      -> strip trailing _PD
+                             {DOMAIN}_{LAYER}         -> unchanged #}
                         {% if db.startswith('_PR_') %}
                             {% set parts = db.split('_') %}
                             {% set db = parts[3:] | join('_') %}
@@ -777,7 +830,8 @@
         {% if skipped_ephemeral | length > 0 %}
             {{ log(
                 "[cross_domain_grants] skipped " ~ skipped_ephemeral | length
-                ~ " ephemeral CROSS_DOMAIN model(s): " ~ skipped_ephemeral | join(', '),
+                ~ " ephemeral CROSS_DOMAIN model(s): " ~ skipped_ephemeral | join(', ')
+                ~ " — no physical relation; omitted from grant manifest.",
                 info=true
             ) }}
         {% endif %}
@@ -790,6 +844,11 @@
             {{ return('') }}
         {% endif %}
 
+        {# --------------------------------------------------------
+           Step 2: CALL GRANT_CROSS_DOMAIN_READ_ACCESS_BY_DOMAIN once
+           per domain. Same DEPLOY CUR/CON role switch as certified;
+           ELT left as-is (EXECUTE AS OWNER on the proc).
+           -------------------------------------------------------- #}
         {% set original_role = target.role | upper %}
         {% set grant_role = cp_dbt_standard_package.get_tagging_role(target.database) %}
         {% if grant_role %}
@@ -810,7 +869,9 @@
                 ~ " | role: " ~ (grant_role if grant_role else original_role),
                 info=true
             ) }}
-            {# Snowflake wants '' not \' inside string literals #}
+            {# Snowflake single-quoted string escape is a doubled apostrophe
+               (''), not a backslash. A prior `\'` escape left a raw ' inside
+               the literal and broke payloads with apostrophes in names. #}
             {% set call_sql %}
                 CALL OPS_CUR.UTIL_COMMON.GRANT_CROSS_DOMAIN_READ_ACCESS_BY_DOMAIN(
                     '{{ domain_db }}',
