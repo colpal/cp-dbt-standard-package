@@ -3,7 +3,7 @@
 # and underscores. A good package name should reflect your organization's
 # name or the intended use of these models
 name: 'cp_dbt_standard_package'
-version: '2.7.0'
+version: '2.7.1'
 config-version: 2
 
 # This setting configures which "profile" dbt uses for this project.
@@ -48,11 +48,15 @@ models:
 # SBX / _LAB_ guard: sandbox and lab databases are analyst-owned; skip both
 # tagging and grant reconciliation there.
 #
-# Belt-and-suspenders: each macro also carries its own flags.WHICH guard in
-# apply_snowflake_tags.sql so any downstream project that wires these into
-# their own on-run-end without the yaml guard still gets correct behavior.
+# Grant hooks (certified / cross-domain) also skip when they cannot safely CALL:
+#   - ephemeral target DBs (_PR_* / *_PD) — CI previews, not real DEV/PROD
+#   - role must contain DEPLOY or ELT (CI + Airflow); analysts excluded
+#   - this-run relevance (DPB-2838): at least one successful certified _CON
+#     model (certified hook) or CROSS_DOMAIN model (cross-domain hook)
+# Tagging stays on the lighter guard so PR/PD still retag.
+# Macros repeat these checks (with SKIPPED logs) if called without yaml gates.
 on-run-end:
   - "{% if flags.WHICH in ['run','build','seed','snapshot','clone'] and 'SBX' not in target.database | upper and '_LAB_' not in target.database | upper %}{{ cp_dbt_standard_package.tag_models_from_results() }}{% endif %}"
-  - "{% if flags.WHICH in ['run','build','seed','snapshot','clone'] and 'SBX' not in target.database | upper and '_LAB_' not in target.database | upper %}{{ cp_dbt_standard_package.call_certified_read_proc() }}{% endif %}"
-  - "{% if flags.WHICH in ['run','build','seed','snapshot','clone'] and 'SBX' not in target.database | upper and '_LAB_' not in target.database | upper %}{{ cp_dbt_standard_package.call_cross_domain_read_proc() }}{% endif %}"
+  - "{% if flags.WHICH in ['run','build','seed','snapshot','clone'] and 'SBX' not in target.database | upper and '_LAB_' not in target.database | upper and '_PR_' not in target.database | upper and not (target.database | upper).endswith('_PD') and ('DEPLOY' in target.role | upper or 'ELT' in target.role | upper) and cp_dbt_standard_package.get_certified_consumption_objects() | length > 0 %}{{ cp_dbt_standard_package.call_certified_read_proc() }}{% endif %}"
+  - "{% if flags.WHICH in ['run','build','seed','snapshot','clone'] and 'SBX' not in target.database | upper and '_LAB_' not in target.database | upper and '_PR_' not in target.database | upper and not (target.database | upper).endswith('_PD') and ('DEPLOY' in target.role | upper or 'ELT' in target.role | upper) and cp_dbt_standard_package.get_cross_domain_objects_this_run() | length > 0 %}{{ cp_dbt_standard_package.call_cross_domain_read_proc() }}{% endif %}"
 
