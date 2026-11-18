@@ -23,12 +23,32 @@
     
     {% set merged_extra = extra.copy() %}
     {% do merged_extra.update({
-        'invocation_id': invocation_id, 
+        'invocation_id': invocation_id,
         'model': model.name,
         'database': model.database,
-        'is_airflow_run': airflow_run
+        'is_airflow_run': airflow_run,
+        'origin': 'dbt'
     }) %}
-    
+
+    {# DPB-3238: Airflow lineage from env vars injected by Spicy Mint dbt_run.py #}
+    {% set airflow_dag_id = env_var('AIRFLOW_DAG_ID', '') %}
+    {% set airflow_run_id = env_var('AIRFLOW_RUN_ID', '') %}
+    {% set airflow_task_id = env_var('AIRFLOW_TASK_ID', '') %}
+    {% set domain = env_var('DOMAIN', '') %}
+
+    {% if airflow_dag_id %}
+        {% do merged_extra.update({'dag_id': airflow_dag_id}) %}
+    {% endif %}
+    {% if airflow_run_id %}
+        {% do merged_extra.update({'run_id': airflow_run_id}) %}
+    {% endif %}
+    {% if airflow_task_id %}
+        {% do merged_extra.update({'task_id': airflow_task_id}) %}
+    {% endif %}
+    {% if domain %}
+        {% do merged_extra.update({'domain': domain}) %}
+    {% endif %}
+
     {% set result = adapter.dispatch('set_query_tag', 'dbt_query_tags')(extra=merged_extra) %}
     {% do run_query('USE WAREHOUSE "' ~ warehouseName.upper() ~ '"') %}
 
